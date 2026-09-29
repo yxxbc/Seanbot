@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# 把工作区版本同步进站点：写 site/assets/version.json（页面用它显示「最新版本」，
-# 用户不必点进 GitHub 才知道当前版本）。
+# 把工作区版本同步进站点：写 site/public/assets/version.json（构建时会拷进 dist/，
+# 页面用它显示「最新版本」，用户不必点进 GitHub 才知道当前版本）。
 #
 # 调用点：
 #   - scripts/release.sh：发布提交前调用，让仓库里的副本也保持同步
@@ -24,9 +24,9 @@ released="$(awk -v head="[$version]" '
 ' CHANGELOG.md)"
 [ -n "$released" ] || released="$(date +%Y-%m-%d)"
 
-mkdir -p site/assets
-tmp="site/assets/version.json.tmp"
+mkdir -p site/public/assets
+tmp="site/public/assets/version.json.tmp"
 printf '{\n  "version": "%s",\n  "tag": "%s",\n  "released": "%s"\n}\n' \
   "$version" "$tag" "$released" >"$tmp"
-mv "$tmp" site/assets/version.json
+mv "$tmp" site/public/assets/version.json
 echo "站点版本已同步：${tag}（${released}）"

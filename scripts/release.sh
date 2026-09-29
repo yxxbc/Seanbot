@@ -58,7 +58,7 @@ if [ "$dry" = 1 ]; then
   info "将发布 ${tag}（当前 ${current}）"
   echo "  1. 运行 scripts/test.sh$([ "$tests" = 0 ] && echo "（已跳过）")"
   echo "  2. 更新 Cargo.toml / Cargo.lock 版本号为 $version"
-  echo "  3. CHANGELOG「未发布」→「[$version] - $(date +%Y-%m-%d)」，README 徽章 → ${version}，site/assets/version.json 同步"
+  echo "  3. CHANGELOG「未发布」→「[$version] - $(date +%Y-%m-%d)」，README 徽章 → ${version}，site/public/assets/version.json 同步"
   echo "  4. 提交 chore(release): 发布 $tag 并打标签 $tag"
   echo "  5. $([ "$push" = 1 ] && echo "推送 main 与 $tag 到 origin" || echo "不推送")"
   exit 0
@@ -97,8 +97,8 @@ fi
 
 git add Cargo.toml Cargo.lock CHANGELOG.md
 [ -f README.md ] && git add README.md
-if [ -f site/assets/version.json ]; then
-  git add site/assets/version.json
+if [ -f site/public/assets/version.json ]; then
+  git add site/public/assets/version.json
 fi
 git commit -qm "chore(release): 发布 $tag"
 git tag -a "$tag" -m "Seanbot $tag"

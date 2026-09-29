@@ -39,3 +39,9 @@ docs/superpowers/
 
 # ==== 测试agent时产生的jsonl文件 ====
 trace.jsonl
+
+# ===== 官网（Astro + shadcn/ui，源码在 site/） =====
+# 依赖与构建产物不入库：线上由 .github/workflows/pages.yml 跑 npm ci + npm run build
+site/node_modules/
+site/dist/
+site/.astro/

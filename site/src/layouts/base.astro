@@ -1,0 +1,68 @@
+---
+import "@/styles/global.css"
+
+import { REPO, assetUrl } from "@/lib/site"
+
+interface Props {
+  title: string
+  description: string
+}
+
+const { title, description } = Astro.props
+
+/* 分享卡片必须是绝对地址（相对路径在多数平台不生效），且是 1200×630 的 PNG：
+   site/public/assets/og.png，由 scripts/make-og.py 生成。 */
+const canonical = "https://yxxbc.github.io/Seanbot/"
+const ogImage = "https://yxxbc.github.io/Seanbot/assets/og.png"
+---
+
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#0E0D10" />
+    <link rel="icon" href={assetUrl("assets/icon.svg")} type="image/svg+xml" />
+    <link rel="canonical" href={canonical} />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Seanbot" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content="Seanbot — 终端里的全能 AI 代理" />
+    <meta
+      property="og:description"
+      content="说清楚你要什么，剩下的交给它。一行命令安装，装完 sean update 一键升级。Rust 编写的中文终端 AI 代理。"
+    />
+    <meta property="og:image" content="https://yxxbc.github.io/Seanbot/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="Seanbot — 终端里的中文 AI 代理" />
+    <meta property="og:url" content={canonical} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Seanbot — 终端里的全能 AI 代理" />
+    <meta
+      name="twitter:description"
+      content="说清楚你要什么，剩下的交给它。一行命令安装，sean update 一键升级。"
+    />
+    <meta name="twitter:image" content={ogImage} />
+
+    <meta name="generator" content={Astro.generator} />
+    <link rel="sitemap" href={assetUrl("sitemap.xml")} />
+    <link rel="author" href={REPO} />
+  </head>
+
+  <body>
+    <!-- 品牌背景：两处暖色辉光 + 顶部细网格，纯装饰 -->
+    <div class="site-backdrop site-backdrop--glow" aria-hidden="true"></div>
+    <div class="site-backdrop site-backdrop--grid" aria-hidden="true"></div>
+
+    <a
+      class="sr-only focus:not-sr-only focus:absolute focus:top-4 focus:left-4 focus:z-50 focus:rounded-md focus:bg-primary focus:px-4 focus:py-2 focus:text-primary-foreground"
+      href="#download">跳到下载</a
+    >
+
+    <slot />
+  </body>
+</html>

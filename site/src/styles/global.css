@@ -1,0 +1,156 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+  站点主题。
+
+  品牌配色取自仓库里的图标（pics/Seanbot-app-icon.svg）：
+    近黑 #0E0D10 · 奶白 #F4E9D8 · 金 #E6B85C · 珊瑚 #D95F4B
+  页面默认深色：base.astro 给 <html> 挂了 class="dark"。浅色（:root）是把同一套
+  配色翻到纸面上，token 齐全、组件都能直接用，但官方没有宣传浅色。
+  字体只用系统字体：不请求网络字体，中文走 PingFang / 微软雅黑 / Noto。
+*/
+@theme inline {
+    --font-sans: system-ui, -apple-system, "PingFang SC", "Hiragino Sans GB",
+        "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    --font-heading: var(--font-sans);
+    --font-mono: "SFMono-Regular", ui-monospace, "JetBrains Mono", "Cascadia Mono",
+        Menlo, monospace;
+
+    --color-background: var(--background);
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    /* 品牌点缀色：eyebrow、终端高亮、状态点这类地方用它，
+       不参与“按钮/表单”的语义（那些走 primary / secondary / destructive）。 */
+    --color-brand-gold: var(--brand-gold);
+    --color-brand-coral: var(--brand-coral);
+
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+
+    /* 终端示意图里的光标 */
+    --animate-caret-blink: caret-blink 1.15s step-end infinite;
+    @keyframes caret-blink {
+        50% {
+            opacity: 0;
+        }
+    }
+}
+
+:root {
+    --background: #f7f1e6;
+    --foreground: #17140f;
+    --card: #fffbf4;
+    --card-foreground: #17140f;
+    --popover: #fffbf4;
+    --popover-foreground: #17140f;
+    --primary: #17140f;
+    --primary-foreground: #f7f1e6;
+    --secondary: #efe6d6;
+    --secondary-foreground: #17140f;
+    --muted: #efe6d6;
+    --muted-foreground: #6b6459;
+    --accent: #e7dcc8;
+    --accent-foreground: #17140f;
+    --destructive: #c0442f;
+    --border: #d4cabc;
+    --input: #d4cabc;
+    --ring: #c99a2e;
+    --brand-gold: #a9761b;
+    --brand-coral: #c0442f;
+    --radius: 0.75rem;
+}
+
+.dark {
+    --background: #0e0d10;
+    --foreground: #f0e5d3;
+    --card: #15131a;
+    --card-foreground: #f0e5d3;
+    --popover: #15131a;
+    --popover-foreground: #f0e5d3;
+    --primary: #f4e9d8;
+    --primary-foreground: #14120f;
+    --secondary: #1c1922;
+    --secondary-foreground: #f0e5d3;
+    --muted: #1c1922;
+    --muted-foreground: #938c84;
+    --accent: #221e29;
+    --accent-foreground: #f0e5d3;
+    --destructive: #d95f4b;
+    --border: #2a2728;
+    --input: #34302f;
+    --ring: #e6b85c;
+    --brand-gold: #e6b85c;
+    --brand-coral: #d95f4b;
+    --radius: 0.75rem;
+}
+
+@layer base {
+    * {
+        @apply border-border outline-ring/50;
+    }
+    html {
+        @apply font-sans;
+        -webkit-text-size-adjust: 100%;
+        scroll-behavior: smooth;
+    }
+    body {
+        @apply bg-background text-foreground;
+        line-height: 1.65;
+        -webkit-font-smoothing: antialiased;
+    }
+    /* 锚点跳转别顶到吸顶导航上 */
+    :target {
+        scroll-margin-top: 5rem;
+    }
+}
+
+@layer components {
+    /* 品牌背景：两处暖色辉光 + 顶部细网格（往下淡出）。纯装饰，不承载语义。 */
+    .site-backdrop {
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+    }
+    .site-backdrop--glow {
+        z-index: -2;
+        background:
+            radial-gradient(58% 42% at 10% -4%,
+                color-mix(in oklab, var(--brand-gold) 14%, transparent), transparent 62%),
+            radial-gradient(46% 38% at 92% 4%,
+                color-mix(in oklab, var(--brand-coral) 12%, transparent), transparent 62%);
+    }
+    .site-backdrop--grid {
+        z-index: -1;
+        opacity: 0.55;
+        background-image:
+            linear-gradient(var(--border) 1px, transparent 1px),
+            linear-gradient(90deg, var(--border) 1px, transparent 1px);
+        background-size: 68px 68px;
+        -webkit-mask-image: radial-gradient(130% 78% at 50% 0%, #000 26%, transparent 74%);
+        mask-image: radial-gradient(130% 78% at 50% 0%, #000 26%, transparent 74%);
+    }
+}

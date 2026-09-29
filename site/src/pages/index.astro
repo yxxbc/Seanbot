@@ -1,0 +1,77 @@
+---
+import { AgentLoop } from "@/components/site/agent-loop"
+import { CodeChip } from "@/components/site/code-chip"
+import { DownloadPanel } from "@/components/site/download-panel"
+import { Features } from "@/components/site/features"
+import { Hero } from "@/components/site/hero"
+import { ProductPreview } from "@/components/site/product-preview"
+import { SectionHead } from "@/components/site/section-head"
+import { SiteFooter } from "@/components/site/site-footer"
+import { SiteHeader } from "@/components/site/site-header"
+import { Status } from "@/components/site/status"
+import Base from "@/layouts/base.astro"
+import { RELEASES } from "@/lib/site"
+
+/* 内容都在组件里（src/components/site/），这一页只负责顺序与锚点：
+   工作方式 / 下载 / 预览 / 功能 四个锚点对应导航里的四个链接。 */
+---
+
+<Base
+  title="Seanbot — 终端里的全能 AI 代理"
+  description="Seanbot 是一个运行在终端里的中文 AI 代理：读文件、改代码、跑命令、查资料，说清楚你要什么，剩下的交给它。支持 macOS、Linux 与 Windows。"
+>
+  <SiteHeader />
+
+  <main id="top">
+    <Hero />
+    <AgentLoop />
+
+    <!-- ============ 安装 / 升级 ============ -->
+    <section id="download" class="mx-auto max-w-6xl px-6 py-16 sm:py-20">
+      <SectionHead
+        eyebrow="安装与升级"
+        title="一行命令装好，之后不用再回官网"
+        lede="脚本会自动下载最新版并校验 SHA256；装好后用 sean update 升级（Windows 上重跑一次安装命令即可）。下面的系统与架构已按你的环境选好，也可以手动下载压缩包自己装。"
+      />
+
+      <!-- 交互都在这个 island 里（识别系统与架构、切换形态、复制命令、版本徽章） -->
+      <div class="mt-9">
+        <DownloadPanel client:load />
+      </div>
+
+      <p class="mt-5 text-xs/loose text-muted-foreground">
+        预发布版本：接口与命令可能变动；页面上的版本号由 <CodeChip>scripts/sync-site.sh</CodeChip>
+        在发布时自动同步。安装包与 <CodeChip>SHA256SUMS</CodeChip> 都在
+        <a class="underline underline-offset-4 hover:text-foreground" href={RELEASES}
+          >GitHub Releases</a
+        >；装好后用 <CodeChip>sean update</CodeChip> 升级，不必回官网。
+      </p>
+
+      <noscript>
+        <p class="mt-3 text-xs/loose text-muted-foreground">
+          未启用 JavaScript：上面固定显示默认形态（TUI）与 macOS（Apple 芯片）的安装命令，
+          换形态、换平台请到 GitHub Releases 手动下载。
+        </p>
+      </noscript>
+    </section>
+
+    <!-- ============ 产品预览 ============ -->
+    <section id="preview" class="mx-auto max-w-6xl px-6 pt-2 pb-16 sm:pb-20">
+      <SectionHead
+        eyebrow="产品预览"
+        title="切换版本，看对应的界面"
+        lede="预览图与下载选择保持同步。"
+      />
+
+      <!-- 跟着上面选中的形态走；截图放在 site/public/previews/ 下，缺图时显示占位 -->
+      <div class="mt-9">
+        <ProductPreview client:load />
+      </div>
+    </section>
+
+    <Features />
+    <Status />
+  </main>
+
+  <SiteFooter />
+</Base>

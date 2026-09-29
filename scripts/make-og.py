@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""生成站点分享卡片 site/assets/og.png（1200×630）。
+"""生成站点分享卡片 site/public/assets/og.png（1200×630）。
 
-依赖：Python 3 + Pillow；品牌图标用仓库里的 site/assets/icon.svg 光栅化
+依赖：Python 3 + Pillow；品牌图标用仓库里的 site/public/assets/icon.svg 光栅化
 （优先 rsvg-convert，其次 qlmanage）。生成结果会提交进仓库，改文案后重跑一次即可。
 
 用法：python3 scripts/make-og.py
@@ -20,7 +20,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 W, H = 1200, 630
 ROOT = Path(__file__).resolve().parent.parent
-ASSETS = ROOT / "site" / "assets"
+ASSETS = ROOT / "site" / "public" / "assets"
 
 INK = (14, 13, 16)
 INK_2 = (21, 19, 26)

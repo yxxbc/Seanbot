@@ -1,12 +1,15 @@
 # 把 site/ 发布到 GitHub Pages。
 #
+# 官网是 Astro + shadcn/ui 工程：先在 CI 里 npm ci && npm run build，
+# 再把构建产物 site/dist 传上去（仓库里不提交 dist 与 node_modules）。
+#
 # 首次启用（仓库设置里做一次）：
 #   Settings → Pages → Build and deployment → Source 选 "GitHub Actions"
 # 之后推到 main（且改动 site/ 或本文件）就会自动部署，
 # 线上地址：https://yxxbc.github.io/Seanbot/
 #
-# 想换成自定义域名：在 Settings → Pages 填域名，并在 site/ 里加一个 CNAME 文件
-# （内容就一行域名，构建时会一起上传）。
+# 想换成自定义域名：在 Settings → Pages 填域名，并在 site/public/ 里加一个 CNAME 文件
+# （内容就一行域名，构建时会一起拷进 dist）。
 name: Pages
 
 on:
@@ -42,14 +45,26 @@ jobs:
       - name: 配置 Pages
         uses: actions/configure-pages@v5
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
       - name: 同步站点版本
         run: bash scripts/sync-site.sh
 
-      # 站点是纯静态文件，没有构建步骤：直接把 site/ 打包上传
-      - name: 打包 site/
+      - name: 安装站点依赖
+        run: npm ci --prefix site
+
+      - name: 构建站点（Astro → site/dist）
+        run: npm run build --prefix site
+
+      # 上传的是构建产物：页面是构建时生成的静态 HTML，不含服务端运行时
+      - name: 打包 site/dist
         uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: site/dist
 
       - name: 发布
         id: deployment
