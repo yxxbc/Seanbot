@@ -108,6 +108,13 @@ pub enum Record {
     Retract,
 }
 
+impl Record {
+    /// 清空历史的记录，时间戳取当前本地时间。
+    pub fn clear_now() -> Self {
+        Self::Clear { at: now_rfc3339() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSummary {
     pub id: String,

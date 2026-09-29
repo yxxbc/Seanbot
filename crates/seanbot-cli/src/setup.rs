@@ -162,7 +162,7 @@ pub async fn print_models(cfg: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn prompt_choice(prompt: &str, n: usize, default: Option<usize>) -> io::Result<usize> {
+pub(crate) fn prompt_choice(prompt: &str, n: usize, default: Option<usize>) -> io::Result<usize> {
     loop {
         print!("{prompt}");
         io::stdout().flush()?;

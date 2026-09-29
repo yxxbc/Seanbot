@@ -146,6 +146,15 @@ impl Agent {
         self.reads.clear();
     }
 
+    /// 切换到另一段会话（`/resume`、`/new`）：连同系统提示词一起替换。
+    ///
+    /// 恢复已有会话时必须用文件里保存的系统提示词，否则请求前缀会变，缓存全部失效。
+    pub fn restore(&mut self, system: String, history: Vec<Message>) {
+        self.system = system;
+        self.history = history;
+        self.reads.clear();
+    }
+
     pub async fn run_turn(
         &mut self,
         user_input: String,

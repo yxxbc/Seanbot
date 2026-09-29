@@ -7,6 +7,7 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 **核心能力**
 
 - 对话：多轮对话、流式输出；可显示推理过程与 token 用量（含缓存命中量）。
+- 会话记录：对话按工作目录写入 `~/.seanbot/sessions/`（JSONL，权限 0600），随时可恢复继续；恢复时沿用原系统提示词，DeepSeek 前缀缓存不会失效。
 - 文件读写：`read` 读取文件（带行号）；`edit` 修改或新建文件，改动前必须先 `read` 且文件未被外部改动，防止误改。
 - 执行命令：`bash` 运行本地命令（默认超时 120 秒，超时会杀掉整个进程组）；内置命令黑名单作为安全护栏。
 - 代码搜索：`search` 按文件名（glob）或内容（正则）搜索，自动遵守 `.gitignore`。
@@ -19,15 +20,15 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 |---|---|
 | 名称 | Seanbot |
 | 命令 | `sean` |
-| 版本 | 0.1.0（开发早期） |
+| 版本 | 0.1.1（开发早期） |
 | 技术 | Rust（edition 2024，Rust 1.85+）；目标架构为三 crate 工作区 `seanbot-cli` → `seanbot-core` → `seanbot-provider` |
 | 平台 | macOS / Linux |
 | 模型 | 内置 DeepSeek（默认 `deepseek-chat`），可扩展其他 OpenAI 兼容厂商 |
 | 界面语言 | 中文（工具名与命令保持英文） |
-| 数据目录 | `~/.seanbot/`（`config.toml` 权限 0600、`history` 输入历史） |
+| 数据目录 | `~/.seanbot/`（`config.toml` 权限 0600、`history` 输入历史、`sessions/` 会话记录） |
 | 环境变量 | `DEEPSEEK_API_KEY` 优先于配置文件中的 key |
 
-**当前状态**：处于 MVP 起步阶段。设计文档已完成待审阅（`docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md`，是架构的唯一权威来源），代码仍是 `cargo new` 骨架。
+**当前状态**：处于 MVP 起步阶段，工具、配置向导与会话记录已可用。设计文档见 `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md`，是架构的权威来源。
 
 ## why author create Seanbot?
 
@@ -45,12 +46,15 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 
 **用法**
 
-- `sean`：进入交互式对话。
-- `sean -p "<问题>"`：单次提问，打印回答后退出。
+- `sean`：进入交互式对话（本次对话会写入会话文件）。
+- `sean -p "<问题>"`：单次提问，打印回答后退出；默认不写会话文件，需要留档时加 `--session`。
+- `sean -c`：继续当前目录最近一次会话。
+- `sean -r [<会话ID>]`：恢复会话；省略 ID 时列出当前目录的会话供选择。
+- `sean --no-session`：本次对话不写入会话文件。
 - `sean config`：配置向导（选厂商 → 输入 API key → 验证 → 拉取模型列表 → 选模型）；首次运行无配置且无环境变量 key 时自动进入。
 - `sean models`：列出当前厂商的可用模型。
 - `--model <id>`：临时覆盖模型。
-- 对话内斜杠命令：`/clear`、`/model`、`/help`、`/exit`。
+- 对话内斜杠命令：`/new`（开始新会话）、`/resume`（从列表中选择并恢复历史会话）、`/clear`、`/model`、`/help`、`/exit`。
 - 快捷键：Ctrl+C 执行中取消当前任务、提示符处连按两次退出；Ctrl+D 退出。
 
 **典型任务示例**
@@ -59,7 +63,7 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 - "在整个项目里搜索所有用到某个符号的地方并汇总。"
 - "解释这个报错并修复它。"
 
-**当前版本还不包含**（规划中）：TUI / 桌面端、工具执行确认界面、知识库与人格、子代理、插件系统、会话持久化与 `--resume`、上下文压缩、Markdown 渲染。
+**当前版本还不包含**（规划中）：TUI / 桌面端、工具执行确认界面、知识库与人格、子代理、插件系统、上下文压缩、Markdown 渲染、跨会话长期记忆（自动记住用户偏好与事实）、`sean update` 自更新（目前用安装脚本升级）。
 
 # Seanbot github repo
 

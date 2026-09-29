@@ -49,8 +49,7 @@ pub fn system_prompt(env: &PromptEnv) -> String {
   - `sessions/`：会话记录，按工作目录分组（JSONL）
   - `history`：用户的输入历史
 - 用户可用的命令：`sean`（交互界面）、`sean -p \"问题\"`（单轮）、`sean -c` / `sean -r`（恢复会话）、`sean config`、`sean models`
-- 交互界面中的斜杠命令：/help /new /resume /clear /model /yolo /mouse /exit；Ctrl+O 查看完整转录
-- 更新程序：`sean update`（`--check` 只检查）
+- 交互界面中的斜杠命令：/help /new /resume /clear /model /exit
 - 权限：默认\"确认模式\"下，edit 与 bash 需要用户确认；用户可能拒绝并附上原因，请按原因调整做法，不要换个写法重试同一操作。用户也可能开启 YOLO 模式，工具直接执行。部分危险命令（如 rm、sudo）被黑名单禁止，任何模式下都无法执行。
 - 当前模型、权限模式、时间、会话、git 状态等会变化的信息不在这里，需要时调用 `perceive`。
 
@@ -110,8 +109,7 @@ mod tests {
             "不要读取或输出它的内容",
             "`sessions/`",
             "sean -c",
-            "sean update",
-            "/mouse",
+            "/resume",
             "确认模式",
             "perceive",
             "# 环境",

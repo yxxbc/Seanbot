@@ -1463,6 +1463,7 @@ name = "seanbot-cli"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "crossterm",
  "dirs",
@@ -1471,6 +1472,7 @@ dependencies = [
  "rustyline",
  "seanbot-core",
  "seanbot-provider",
+ "tempfile",
  "tokio",
  "tokio-util",
  "unicode-width",
