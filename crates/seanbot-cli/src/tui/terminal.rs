@@ -223,7 +223,7 @@ mod tests {
         }
     }
 
-    /// 某一步写失败（Windows 上关鼠标捕获就会这样）不能让后面的还原被跳过。
+    /// 模拟"第一次写就失败"的 writer（Windows 上关鼠标捕获报错就是这种效果）。
     struct FailsOnce {
         bytes: Vec<u8>,
         failed: bool,
@@ -236,7 +236,7 @@ mod tests {
                 return Ok(buf.len());
             }
             self.failed = true;
-            Err(io::Error::other("模拟第一步失败"))
+            Err(io::Error::other("模拟写失败"))
         }
 
         fn flush(&mut self) -> io::Result<()> {
@@ -244,6 +244,11 @@ mod tests {
         }
     }
 
+    /// 某一步写失败（Windows 上关鼠标捕获就会这样）不能让后面的还原被跳过。
+    ///
+    /// 这里只断言**最后一步（恢复光标）照样写了**：失败具体落在哪一步与平台有关——
+    /// Windows 上关鼠标捕获走 winapi、根本不写字节，模拟的"第一次写失败"就落到
+    /// bracketed paste 那一步；非 Windows 则落在鼠标那一步。两种情况都必须走完。
     #[test]
     fn a_failed_step_does_not_skip_the_rest_of_the_restore() {
         let mut out = FailsOnce {
@@ -251,15 +256,16 @@ mod tests {
             failed: false,
         };
         let result = restore_sequence(&mut out);
-        assert!(result.is_err(), "第一步确实失败了，错误要能被看到");
+        assert!(result.is_err(), "写失败要能被看到，不能被吞掉");
         let text = String::from_utf8(out.bytes).unwrap();
-        for (name, code) in [
-            ("关闭 bracketed paste", "\u{1b}[?2004l"),
-            ("恢复光标显示", "\u{1b}[?25h"),
-        ] {
+        assert!(
+            text.contains("\u{1b}[?25h"),
+            "某一步失败后，恢复光标显示仍然要写出去：{text:?}"
+        );
+        if !cfg!(windows) {
             assert!(
-                text.contains(code),
-                "第一步失败后仍然要写「{name}」：{text:?}"
+                text.contains("\u{1b}[?2004l"),
+                "非 Windows 上第一步就失败，后面的 bracketed paste 也要写：{text:?}"
             );
         }
     }
