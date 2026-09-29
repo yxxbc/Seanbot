@@ -5,8 +5,9 @@
 //! - `exit`      ：`std::process::exit` 跳过 Drop → 靠 stdin 管道 EOF 让 shell 自杀
 //! - `closeall`  ：显式 close_all
 //!
-//! 用法：`cargo run -q -p seanbot-core --example bash_session_probe -- <drop|exit|closeall> <会话数>`
-//! 输出：每个会话一行 `PROBE pid=<pid> name=<名字>`，供脚本核对进程是否真的消失。
+//! 用法：`cargo run -q -p seanbot-core --example bash_session_probe -- <drop|exit|closeall> <会话数> [逃逸命令]`
+//! 输出：每个会话一行 `PROBE name=<名字> pid=<pid> background=<pid>`；给了逃逸命令时再多一行
+//! `PROBE escape=<pid>`，供脚本核对进程是否真的消失。
 
 use std::{process::ExitCode, time::Duration};
 
@@ -21,6 +22,8 @@ async fn main() -> ExitCode {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(2);
+    // 可选的"逃逸命令"：在会话里起一个主动脱离进程组的进程（验证它也能被收掉）
+    let escape = args.next();
 
     let sessions = BashSessions::new(8);
     let cancel = CancellationToken::new();
@@ -56,6 +59,14 @@ async fn main() -> ExitCode {
                 .unwrap_or_else(|| "?".into()),
             output.cwd
         );
+
+        if let Some(command) = escape.as_deref() {
+            let escaped = sessions
+                .run(&name, command, Duration::from_secs(10), 4096, &cancel)
+                .await
+                .expect("逃逸命令执行失败");
+            println!("PROBE escape={}", escaped.output.trim());
+        }
     }
 
     match mode.as_str() {

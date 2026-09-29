@@ -157,6 +157,51 @@ async fn timeout_in_a_fresh_session_does_not_leave_a_process() {
     assert!(sessions.list().is_empty());
 }
 
+/// 造一个"主动脱离进程组"的命令；环境里既没有 setsid 也没有 python3 时返回 None。
+fn escape_command() -> Option<String> {
+    let has = |program: &str| {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {program} >/dev/null 2>&1"))
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+    if has("setsid") {
+        Some("setsid sleep 300 >/dev/null 2>&1 & echo $!".to_string())
+    } else if has("python3") {
+        Some(
+            "python3 -c \"import os; os.setsid(); os.execvp('sleep', ['sleep', '300'])\" >/dev/null 2>&1 & echo $!"
+                .to_string(),
+        )
+    } else {
+        None
+    }
+}
+
+/// 脱离进程组的进程（自己 setsid 的）也必须被收掉：进程组杀不到它，靠标记扫描。
+#[tokio::test]
+async fn escaped_processes_are_collected_too() {
+    let Some(command) = escape_command() else {
+        eprintln!("跳过：环境里没有 setsid / python3");
+        return;
+    };
+    let sessions = BashSessions::new(2);
+    let out = run(&sessions, "escape", &command).await;
+    let pid: u32 = out
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    assert!(pid > 0, "拿不到逃逸进程 pid：{out}");
+    assert!(alive(pid), "逃逸进程应当还活着：{out}");
+
+    sessions.close_all();
+    assert!(wait_gone(pid).await, "逃逸进程没被收掉：{out}");
+}
+
 #[tokio::test]
 async fn limits_and_names_are_enforced() {
     let sessions = BashSessions::new(1);

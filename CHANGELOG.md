@@ -14,6 +14,8 @@ Seanbot 的所有重要变更都会记录在本文件中。
 ### 新增
 
 - bash 常驻会话：`bash` 新增 `session` 参数，同一个会话里 `cd`、环境变量、函数都会保留，适合"先 cd 再跑一串命令"这类连续操作；不带 `session` 时仍是一次性进程，行为不变
+- Windows 上的常驻会话：有 Git Bash 时走同一套 POSIX 逻辑，否则用 PowerShell（`-Command -` 从 stdin 读命令、哨兵带回 `$LASTEXITCODE` 与 `Get-Location`）
+- 连"主动脱离进程组"的进程也收得掉（例如会话里 `setsid` 起的守护进程）：每个会话带唯一标记进环境，关闭时 Rust 端按标记扫一遍（Linux 读 `/proc/*/environ`，macOS 用 `ps eww`）发 SIGKILL；会话 shell 的 `EXIT` 陷阱里也扫一遍，所以父进程被 SIGKILL、Rust 端没机会执行时同样不留残渣
 - 新工具 `bash_session`（`list` / `close` / `close_all`）管理常驻会话；`tools.bash.max_sessions`（默认 8）限制同时开几个，可用 `config` 工具调整
 - **退出必定清理，绝不留孤儿进程**：四层保证——CLI 每条退出路径显式 `shutdown()`、`BashSessions` 的 `Drop` 杀进程组、会话 shell 挂着 `trap 'kill 0' EXIT` 且 stdin 管道 EOF 时自杀（父进程被 SIGKILL 也生效）、每个会话独占进程组 `killpg(SIGKILL)` 连后台任务一起收；命令超时或取消直接关掉该会话
 - 清理验证脚本 `scripts/tests/bash_session_test.sh`：探针跑 drop / exit（跳过析构）/ closeall / timeout 四条退出路径，每个会话里都留一个 `sleep 300` 后台任务，最后按 pid 与进程标记双重扫描 `ps`，任何残留都判失败

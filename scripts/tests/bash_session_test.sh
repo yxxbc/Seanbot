@@ -55,7 +55,7 @@ check_no_leftover() { # check_no_leftover <场景>
 
 # 会话 pid 与会话里那个后台任务的 pid 都要核对：只杀 shell、不杀进程组是过不了的
 pids_of() {
-  awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^(pid|background)=[0-9][0-9]*$/) { split($i, pair, "="); print pair[2] } }'
+  awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^(pid|background|escape)=[0-9][0-9]*$/) { split($i, pair, "="); print pair[2] } }'
 }
 
 note "== 构建探针 =="
@@ -73,6 +73,33 @@ for mode in drop exit closeall; do
   check_no_leftover "$mode"
   note "   ✓ 无残留"
 done
+
+# 主动脱离进程组（setsid）的进程：进程组杀不到它，要靠标记扫描 + shell 的 EXIT 陷阱
+if command -v setsid >/dev/null 2>&1; then
+  ESCAPE='setsid sleep 300 >/dev/null 2>&1 & echo $!'
+elif command -v python3 >/dev/null 2>&1; then
+  ESCAPE='python3 -c "import os; os.setsid(); os.execvp(chr(115)+chr(108)+chr(101)+chr(101)+chr(112), [chr(115)+chr(108)+chr(101)+chr(101)+chr(112), chr(51)+chr(48)+chr(48)])" >/dev/null 2>&1 & echo $!'
+else
+  ESCAPE=''
+fi
+
+if [ -n "$ESCAPE" ]; then
+  for mode in drop exit; do
+    note ""
+    note "== 场景 escape+$mode：会话里再起一个脱离进程组(setsid)的进程，然后 $mode 退出 =="
+    out=$(cargo run -q -p seanbot-core --example bash_session_probe -- "$mode" 2 "$ESCAPE" 2>/dev/null)
+    printf '%s\n' "$out"
+    pids=$(printf '%s\n' "$out" | pids_of | tr '\n' ' ')
+    note "   相关 pid：$pids"
+    # shellcheck disable=SC2086
+    check_pids_gone "escape+$mode" $pids
+    check_no_leftover "escape+$mode"
+    note "   ✓ 逃逸进程也被收掉"
+  done
+else
+  note ""
+  note "!! 环境里既没有 setsid 也没有 python3，跳过逃逸进程场景"
+fi
 
 note ""
 note "== 场景 timeout：命令超时后会话必须被关掉（cargo test 断言 + 扫描复核）=="

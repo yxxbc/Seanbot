@@ -217,10 +217,15 @@ impl Drop for BashSessions {
 /// 单个常驻会话。
 struct Session {
     name: String,
+    /// 本会话唯一的进程标记（写进子进程环境，用于清理脱离进程组的漏网进程）
+    token: String,
+    kind: ShellKind,
     child: Child,
     /// 写端；关掉它（置 None）会让 shell 读到 EOF 自行退出
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
+    /// 后台读出来的 stderr（Unix 上 shell 已把 stderr 并进 stdout，这里通常为空）
+    stderr_tail: Arc<Mutex<String>>,
     pid: Option<u32>,
     cwd: String,
     created: Instant,
@@ -229,29 +234,25 @@ struct Session {
 
 impl Session {
     async fn spawn(name: &str) -> Result<Self, SessionError> {
-        let program = if cfg!(windows) {
-            return Err(SessionError::Unsupported("Windows 上的常驻会话还没实现"));
-        } else if let Some(bash) = find_bash() {
-            bash
-        } else {
-            PathBuf::from("sh")
-        };
+        let kind = ShellKind::detect()?;
+        // 每个会话一个唯一标记：清理时按它把"脱离进程组"的漏网进程也扫出来
+        let token = format!("{name}-{}-{}", std::process::id(), next_session_id());
 
-        let mut command = tokio::process::Command::new(&program);
+        let mut command = kind.command();
         command
-            .arg("-s")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
-        // 给测试脚本一个统一的标记：扫描残留进程时按它过滤
-        command.env("SEANBOT_BASH_SESSION", name);
+        command
+            .env("SEANBOT_BASH_SESSION", name)
+            .env(TOKEN_ENV, &token);
 
         let mut child = command
             .spawn()
-            .map_err(|e| SessionError::Spawn(format!("{}: {e}", program.display())))?;
+            .map_err(|e| SessionError::Spawn(e.to_string()))?;
         let pid = child.id();
         let stdin = child
             .stdin
@@ -261,25 +262,26 @@ impl Session {
             .stdout
             .take()
             .ok_or_else(|| SessionError::Spawn("拿不到 stdout".into()))?;
-        // stderr 也读出来，避免管道写满把会话卡死；在 shell 里合并到 stdout 更好
-        let stderr = child.stderr.take();
-        drop(stderr);
+        let stderr_tail = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            spawn_stderr_reader(stderr, Arc::clone(&stderr_tail));
+        }
 
         let mut session = Self {
             name: name.to_string(),
+            token,
+            kind,
             child,
             stdin: Some(stdin),
             stdout: BufReader::new(stdout),
+            stderr_tail,
             pid,
             cwd: String::new(),
             created: Instant::now(),
             last_used: Instant::now(),
         };
-        // 让 shell 自己把 stderr 并到 stdout，保持输出顺序（与一次性 bash 一致）；
-        // 再挂一个 EXIT 兜底：shell 无论怎么退出（含 EOF 自杀），都把整个进程组收掉，
-        // 包括它启动的后台任务——这样父进程被 SIGKILL 也不会留下孙进程。
         session
-            .write("exec 2>&1\ntrap 'kill 0' EXIT\n")
+            .write(&kind.warmup())
             .await
             .map_err(|e| SessionError::Spawn(e.to_string()))?;
         Ok(session)
@@ -302,7 +304,7 @@ impl Session {
         cancel: &CancellationToken,
     ) -> Result<SessionOutput, SessionError> {
         self.last_used = Instant::now();
-        let framed = format!("{command}\nprintf '\\n{MARKER}%s__%s__\\n' \"$?\" \"$PWD\"\n");
+        let framed = self.kind.frame(command);
         self.write(&framed)
             .await
             .map_err(|e| SessionError::Io(self.name.clone(), e.to_string()))?;
@@ -326,8 +328,10 @@ impl Session {
             Outcome::Failed(reason) => Err(SessionError::Io(self.name.clone(), reason)),
             Outcome::Done(collected, exit_code, cwd) => {
                 self.cwd = cwd.clone();
+                let mut output = collected;
+                self.append_stderr(&mut output);
                 Ok(SessionOutput {
-                    output: truncate(collected.trim_end_matches('\n'), max_output),
+                    output: truncate(output.trim_end_matches('\n'), max_output),
                     exit_code: Some(exit_code),
                     cwd,
                     timed_out: false,
@@ -401,14 +405,229 @@ impl Session {
         }
     }
 
-    /// 结束会话：先杀进程组（含后台子进程），再确保进程被回收。
+    /// 取走后台读到的 stderr，拼到输出后面。
+    fn append_stderr(&self, output: &mut String) {
+        let text = match self.stderr_tail.lock() {
+            Ok(mut tail) => std::mem::take(&mut *tail),
+            Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
+        };
+        let text = text.trim_end();
+        if text.is_empty() {
+            return;
+        }
+        if !output.is_empty() && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str(text);
+        output.push('\n');
+    }
+
+    /// 结束会话：先杀进程组（含后台子进程），再收掉脱离进程组的漏网进程。
     fn shutdown(&mut self) {
         kill_group(self.pid);
+        // 自己 setsid 脱离进程组的进程不在组里，按标记再扫一遍
+        kill_escaped(&self.token);
         let _ = self.child.start_kill();
         let _ = self.child.try_wait();
         // 关掉写端：即使 kill 没送到，shell 也会读到 EOF 自行退出
         self.stdin = None;
     }
+}
+
+/// 写进每个会话 shell（及其所有子孙）环境的标记变量名。
+const TOKEN_ENV: &str = "SEANBOT_BASH_SESSION_TOKEN";
+/// 后台暂存的 stderr 上限，防止刷屏把内存吃光。
+const MAX_STDERR_TAIL: usize = 64 * 1024;
+
+/// 会话用的 shell 类型：分帧与收尾方式不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellKind {
+    /// bash / sh：`-s` 从 stdin 读命令
+    Posix,
+    /// Windows PowerShell：`-Command -` 从 stdin 读命令
+    PowerShell,
+}
+
+impl ShellKind {
+    fn detect() -> Result<Self, SessionError> {
+        if cfg!(windows) && find_bash().is_none() {
+            if std::env::var_os("PATH").is_none() {
+                return Err(SessionError::Spawn(
+                    "PATH 取不到，找不到可用的 shell".into(),
+                ));
+            }
+            return Ok(Self::PowerShell);
+        }
+        Ok(Self::Posix)
+    }
+
+    fn command(self) -> tokio::process::Command {
+        match self {
+            Self::Posix => {
+                let program = find_bash().unwrap_or_else(|| PathBuf::from("sh"));
+                let mut command = tokio::process::Command::new(program);
+                command.arg("-s");
+                command
+            }
+            Self::PowerShell => {
+                let mut command = tokio::process::Command::new("powershell");
+                command.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"]);
+                command
+            }
+        }
+    }
+
+    /// 会话刚建立时先发的初始化脚本。
+    fn warmup(self) -> String {
+        match self {
+            Self::Posix => {
+                // 1) stderr 并进 stdout，保持输出顺序（与一次性 bash 一致）
+                // 2) EXIT 兜底：shell 无论怎么退出（含 stdin EOF 自杀）都
+                //    - 按标记扫掉"脱离进程组"的漏网进程（自己 setsid 的那种）
+                //    - kill 0 收掉整个进程组
+                //    这样即使父进程被 SIGKILL、Rust 端清理代码没机会跑，
+                //    会话里的进程（含后台任务与逃逸进程）也会被 shell 自己收走。
+                concat!(
+                    "exec 2>&1\n",
+                    "__sb_kill_escaped() {\n",
+                    "  [ -n \"$SEANBOT_BASH_SESSION_TOKEN\" ] || return 0\n",
+                    "  ps eww -ax 2>/dev/null | grep -F \"SEANBOT_BASH_SESSION_TOKEN=$SEANBOT_BASH_SESSION_TOKEN\" \\\n",
+                    "    | grep -v grep | awk -v me=$$ '$1 != me { print $1 }' \\\n",
+                    "    | while read -r p; do kill -9 \"$p\" 2>/dev/null; done\n",
+                    "}\n",
+                    "trap '__sb_kill_escaped; kill 0' EXIT\n",
+                )
+                .to_string()
+            }
+            Self::PowerShell => "$ProgressPreference = 'SilentlyContinue'\n".to_string(),
+        }
+    }
+
+    /// 把一条命令包成"命令 + 哨兵"，哨兵里带回退出码与当前目录。
+    fn frame(self, command: &str) -> String {
+        match self {
+            Self::Posix => {
+                format!("{command}\nprintf '\\n{MARKER}%s__%s__\\n' \"$?\" \"$PWD\"\n")
+            }
+            Self::PowerShell => format!(
+                "$LASTEXITCODE = $null\n{command}\n\
+                 $__sb = if ($LASTEXITCODE -ne $null) {{ $LASTEXITCODE }} elseif ($?) {{ 0 }} else {{ 1 }}\n\
+                 Write-Output (\"`n{MARKER}\" + $__sb + \"__\" + (Get-Location).Path + \"__\")\n"
+            ),
+        }
+    }
+}
+
+/// 会话序号：让每个会话的标记互不相同（旧会话的漏网进程不会被新会话误杀）。
+fn next_session_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// 后台读 stderr：一是避免管道写满把会话卡死，二是把错误输出并回结果里。
+fn spawn_stderr_reader(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<String>>) {
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(&mut stderr);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if let Ok(mut guard) = tail.lock() {
+                        guard.push_str(&line);
+                        if guard.len() > MAX_STDERR_TAIL {
+                            let cut = guard.len() - MAX_STDERR_TAIL;
+                            let safe = (cut..guard.len())
+                                .find(|index| guard.is_char_boundary(*index))
+                                .unwrap_or(guard.len());
+                            guard.drain(..safe);
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// 收掉"脱离进程组"的漏网进程：按本会话唯一的标记扫环境变量。
+///
+/// 进程组能收掉绝大多数子孙；主动 setsid 的进程不在组里，但环境变量会被继承下来，
+/// 所以再扫一遍把它们 SIGKILL 掉。注意：对方若显式清空了环境（env -i 之类），
+/// 就只剩进程组与 EOF 两层兜底了。
+#[cfg(unix)]
+fn kill_escaped(token: &str) {
+    for pid in marked_processes(token) {
+        if pid == std::process::id() {
+            continue;
+        }
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// Windows 上没有可移植的"按环境变量找进程"办法：靠 taskkill /T 杀进程树。
+#[cfg(windows)]
+fn kill_escaped(_token: &str) {}
+
+/// 找出带着本会话标记的进程。
+#[cfg(unix)]
+fn marked_processes(token: &str) -> Vec<u32> {
+    let needle = format!("{TOKEN_ENV}={token}");
+    let mut found = Vec::new();
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+                    continue;
+                };
+                if let Ok(bytes) = std::fs::read(entry.path().join("environ")) {
+                    if contains_env(&bytes, &needle) {
+                        found.push(pid);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // macOS / 其它 Unix：ps eww 会把环境变量打出来
+        if let Ok(out) = std::process::Command::new("ps")
+            .args(["eww", "-ax"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                if !line.contains(&needle) {
+                    continue;
+                }
+                if let Some(pid) = line
+                    .split_whitespace()
+                    .next()
+                    .and_then(|first| first.parse::<u32>().ok())
+                {
+                    found.push(pid);
+                }
+            }
+        }
+    }
+
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// 环境块是 NUL 分隔的 KEY=VALUE，按整项匹配避免子串误判。
+#[cfg(target_os = "linux")]
+fn contains_env(environ: &[u8], needle: &str) -> bool {
+    environ
+        .split(|byte| *byte == 0)
+        .any(|entry| entry == needle.as_bytes())
 }
 
 impl std::fmt::Debug for Session {
