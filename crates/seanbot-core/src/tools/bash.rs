@@ -80,11 +80,14 @@ impl Interpreter {
     }
 }
 
-/// PowerShell 包装脚本：脚本放进独立块（前后换行，避免结尾注释吞掉 `}`），合并 stderr，
-/// 并在末尾显式 `exit $LASTEXITCODE` —— PowerShell 5.1 的 -Command 只按成功与否给出 0/1，
-/// 甚至把写入 stderr 的成功命令报成失败，必须显式透传。
+/// PowerShell 包装脚本：
+/// 1. 先关掉进度流——stderr 被重定向时 PS 5.1 会把进度记录序列化成
+///    `#< CLIXML <Objs …>` 噪声（如冷启动的“Preparing modules for first use”）写进 stderr；
+/// 2. 用户脚本放进独立块（前后换行，避免结尾注释把 `}` 吞掉），合并 stderr；
+/// 3. 末尾显式 `exit $LASTEXITCODE`——PS 5.1 的 -Command 只按成功与否给出 0/1，
+///    甚至把写入 stderr 的成功命令报成失败，必须显式透传。
 fn powershell_script(script: &str) -> String {
-    format!("& {{\n{script}\n}} 2>&1; exit $LASTEXITCODE")
+    format!("$ProgressPreference = 'SilentlyContinue'\n& {{\n{script}\n}} 2>&1; exit $LASTEXITCODE")
 }
 
 /// `-EncodedCommand` 要求脚本先编码为 UTF-16LE，再做 base64。
@@ -614,6 +617,11 @@ mod powershell_wrapper {
     #[test]
     fn powershell_command_keeps_script_and_exit_code() {
         let script = decoded("npm test");
+        // 先关进度流：非控制台下 PS 5.1 会把进度记录序列化成 CLIXML 写进 stderr
+        assert!(
+            script.starts_with("$ProgressPreference = 'SilentlyContinue'"),
+            "{script}"
+        );
         assert!(script.contains("npm test"), "{script}");
         assert!(script.contains("2>&1"), "{script}");
         // PowerShell 5.1 的 -Command 不把失败状态带出来，必须显式 exit
@@ -649,6 +657,11 @@ mod windows_tests {
             .await
             .unwrap();
         assert!(out.content.starts_with("hi"), "{}", out.content);
+        assert!(
+            !out.content.contains("CLIXML"),
+            "不应残留 CLIXML 进度噪声：{}",
+            out.content
+        );
         assert!(!out.is_error);
     }
 
@@ -676,6 +689,11 @@ mod windows_tests {
         .unwrap();
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("progress"), "{}", out.content);
+        assert!(
+            !out.content.contains("CLIXML"),
+            "不应出现 CLIXML 噪声：{}",
+            out.content
+        );
     }
 
     #[tokio::test]
@@ -685,6 +703,11 @@ mod windows_tests {
             .await
             .unwrap();
         assert!(out.content.starts_with("a b"), "{}", out.content);
+        assert!(
+            !out.content.contains("CLIXML"),
+            "不应出现 CLIXML 噪声：{}",
+            out.content
+        );
         let out = execute(
             &Interpreter::PowerShell,
             r#"Write-Output "c:\d\""#,
