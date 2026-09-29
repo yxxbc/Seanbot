@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+#
+# pre-commit —— 提交前硬性安全检查
+#
+# 拒绝三类内容：
+#   1. 大于 1 MiB 的单个文件（防止二进制 / 大文件误入仓库）
+#   2. 疑似密钥文件（.env、*.pem、*.key 等；.env.example 放行）
+#   3. 包含未解决冲突标记的文件
+#
+# 安装：bash scripts/install-hooks.sh
+set -u
+
+max_bytes=1048576   # 1 MiB
+fail=0
+
+while IFS= read -r -d '' file; do
+  [ -n "$file" ] || continue
+  [ -f "$file" ] || continue
+  base="$(basename "$file")"
+
+  size="$(wc -c < "$file" | tr -d '[:space:]')"
+  if [ "$size" -gt "$max_bytes" ]; then
+    echo "✗ 文件过大，拒绝提交：$file（$size 字节 > 1 MiB）" >&2
+    echo "  如为大体积必要资源，请使用 Git LFS 或先与维护者讨论。" >&2
+    fail=1
+  fi
+
+  case "$base" in
+    .env.example) ;; # 放行示例文件
+    .env|.env.*|*.pem|*.key|*.p12|*.keystore|*.jks|id_rsa*|id_ed25519*|id_ecdsa*|credentials.json)
+      echo "✗ 疑似密钥 / 环境变量文件，拒绝提交：$file" >&2
+      echo "  如为示例文件，请命名为 .env.example 或 *.example。" >&2
+      fail=1
+      ;;
+  esac
+
+  if grep -IqE '^(<{7}|>{7})' "$file"; then
+    echo "✗ 文件包含未解决的冲突标记，拒绝提交：$file" >&2
+    fail=1
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "  如确需绕过：git commit --no-verify（请谨慎使用，勿将上述内容混入 PR）。" >&2
+  exit 1
+fi
+
+exit 0
