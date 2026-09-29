@@ -491,8 +491,18 @@ impl ShellKind {
                     "exec 2>&1\n",
                     "__sb_kill_escaped() {\n",
                     "  [ -n \"$SEANBOT_BASH_SESSION_TOKEN\" ] || return 0\n",
-                    "  ps eww -ax 2>/dev/null | grep -F \"SEANBOT_BASH_SESSION_TOKEN=$SEANBOT_BASH_SESSION_TOKEN\" \\\n",
-                    "    | grep -v grep | awk -v me=$$ '$1 != me { print $1 }' \\\n",
+                    "  needle=\"SEANBOT_BASH_SESSION_TOKEN=$SEANBOT_BASH_SESSION_TOKEN\"\n",
+                    "  # Linux：直接读 /proc/<pid>/environ——ps 对别的进程不一定显示环境变量（CI 上就是这样）\n",
+                    "  if [ -d /proc ]; then\n",
+                    "    for environ in /proc/[0-9]*/environ; do\n",
+                    "      grep -qzFx \"$needle\" \"$environ\" 2>/dev/null || continue\n",
+                    "      pid=\"${environ#/proc/}\"; pid=\"${pid%/environ}\"\n",
+                    "      [ \"$pid\" = \"$$\" ] || kill -9 \"$pid\" 2>/dev/null\n",
+                    "    done\n",
+                    "  fi\n",
+                    "  # macOS 等没有 /proc 的场合：ps eww 能显示同用户进程的环境变量\n",
+                    "  ps eww -ax 2>/dev/null | grep -F \"$needle\" | grep -v grep \\\n",
+                    "    | awk -v me=$$ '$1 != me { print $1 }' \\\n",
                     "    | while read -r p; do kill -9 \"$p\" 2>/dev/null; done\n",
                     "}\n",
                     "trap '__sb_kill_escaped; kill 0' EXIT\n",
@@ -707,4 +717,47 @@ fn truncate(text: &str, max_chars: usize) -> String {
     let head: String = text.chars().take(keep).collect();
     let tail: String = text.chars().skip(total - keep).collect();
     format!("{head}\n…[省略 {} 字符]…\n{tail}", total - 2 * keep)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 会话初始化脚本是拼进 Rust 字符串的 shell 片段：转义写错时这里先炸，
+    /// 不用等会话行为测试（`scripts/tests/bash_session_test.sh`）里才发现。
+    #[test]
+    fn warmup_script_is_valid_bash() {
+        let has_bash = std::process::Command::new("bash")
+            .arg("--version")
+            .output()
+            .is_ok();
+        if !has_bash {
+            return; // 没有 bash 的平台（例如 Windows 裸机）跳过
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("warmup.sh");
+        std::fs::write(&path, ShellKind::Posix.warmup()).unwrap();
+        let out = std::process::Command::new("bash")
+            .arg("-n")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "warmup 脚本语法错误：{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// 退出兜底要能在 Linux 上找到「脱离进程组」的漏网进程：`ps` 对别的进程
+    /// 不保证显示环境变量，所以必须走 /proc。
+    #[test]
+    fn warmup_reaps_escaped_processes_via_proc() {
+        let script = ShellKind::Posix.warmup();
+        assert!(script.contains("/proc/[0-9]*/environ"), "{script}");
+        assert!(
+            script.contains("trap '__sb_kill_escaped; kill 0' EXIT"),
+            "{script}"
+        );
+    }
 }
