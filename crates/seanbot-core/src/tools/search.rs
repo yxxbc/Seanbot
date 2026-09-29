@@ -12,7 +12,6 @@ use crate::tool::{
     Risk, Tool, ToolContext, ToolError, ToolOutput, is_binary, opt_str, opt_u64, resolve_path,
 };
 
-const DEFAULT_MAX: u64 = 200;
 const MAX_LINE_CHARS: usize = 300;
 
 pub struct SearchTool;
@@ -22,14 +21,14 @@ impl Tool for SearchTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "search".into(),
-            description: "在工作目录下搜索文件与代码，遵守 .gitignore。只给 glob 时按路径模式列出文件（如 \"*.rs\"、\"src/**/*.toml\"）；给 pattern 时用正则搜索文件内容，输出 路径:行号: 内容，可再用 glob 限定文件范围。pattern 与 glob 至少提供一个。默认最多 200 条结果。".into(),
+            description: "在工作目录下搜索文件与代码，遵守 .gitignore。只给 glob 时按路径模式列出文件（如 \"*.rs\"、\"src/**/*.toml\"）；给 pattern 时用正则搜索文件内容，输出 路径:行号: 内容，可再用 glob 限定文件范围。pattern 与 glob 至少提供一个。默认条数由配置决定（默认 200，可用 max_results 调整）。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "正则表达式，搜索文件内容"},
                     "glob": {"type": "string", "description": "文件路径 glob，相对搜索根目录"},
                     "path": {"type": "string", "description": "搜索根目录或单个文件，默认工作目录"},
-                    "max_results": {"type": "integer", "description": "最多返回条数，默认 200"}
+                    "max_results": {"type": "integer", "description": "最多返回条数，默认由配置决定（默认 200）"}
                 }
             }),
         }
@@ -73,12 +72,24 @@ impl Tool for SearchTool {
         if !root.exists() {
             return Err(ToolError::Failed(format!("路径不存在：{raw_root}")));
         }
-        let max = opt_u64(&args, "max_results")?.unwrap_or(DEFAULT_MAX).max(1) as usize;
+        let default_results = ctx.config.read(|c| c.tools.search.default_results);
+        let max = opt_u64(&args, "max_results")?
+            .unwrap_or(default_results)
+            .max(1) as usize;
 
         let cwd = ctx.cwd.clone();
         let cancel = ctx.cancel.clone();
+        let config_path = ctx.config_path.clone();
         let found = tokio::task::spawn_blocking(move || {
-            run_search(&root, &cwd, matcher.as_ref(), regex.as_ref(), max, &cancel)
+            run_search(
+                &root,
+                &cwd,
+                matcher.as_ref(),
+                regex.as_ref(),
+                max,
+                config_path.as_deref(),
+                &cancel,
+            )
         })
         .await
         .map_err(|e| ToolError::Failed(format!("搜索任务异常：{e}")))??;
@@ -117,6 +128,7 @@ fn run_search(
     glob: Option<&GlobMatcher>,
     regex: Option<&Regex>,
     max: usize,
+    config_path: Option<&Path>,
     cancel: &CancellationToken,
 ) -> Result<Found, ToolError> {
     let mut builder = WalkBuilder::new(root);
@@ -136,6 +148,13 @@ fn run_search(
             continue;
         }
         let path = entry.path();
+        // 配置文件含 API key：既不在 read 里给，也不从搜索结果里泄露
+        if config_path.is_some_and(|cfg| {
+            path.file_name().is_some_and(|n| n == "config.toml")
+                && crate::config::is_config_file(path, cfg)
+        }) {
+            continue;
+        }
         if let Some(m) = glob {
             let rel = path.strip_prefix(root).unwrap_or(path);
             // 搜索根是单个文件时 strip 后为空，改用文件名匹配

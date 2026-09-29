@@ -1,6 +1,7 @@
 //! 内置工具。
 
 mod bash;
+mod config;
 mod edit;
 mod perceive;
 mod read;
@@ -9,6 +10,7 @@ mod web;
 
 pub use bash::BashTool;
 pub(crate) use bash::interpreter_label;
+pub use config::ConfigTool;
 pub use edit::EditTool;
 pub use perceive::PerceiveTool;
 pub use read::ReadTool;
@@ -23,8 +25,9 @@ use crate::{config::Config, registry::ToolRegistry, tool::Tool};
 pub fn builtin_registry(config: &Config) -> ToolRegistry {
     let web = crate::web::backend_from_config(config);
     let mut registry = ToolRegistry::default();
-    let tools: [Arc<dyn Tool>; 7] = [
+    let tools: [Arc<dyn Tool>; 8] = [
         Arc::new(BashTool),
+        Arc::new(ConfigTool),
         Arc::new(EditTool),
         Arc::new(PerceiveTool),
         Arc::new(ReadTool),
@@ -50,6 +53,7 @@ mod tests {
             names,
             [
                 "bash",
+                "config",
                 "edit",
                 "perceive",
                 "read",

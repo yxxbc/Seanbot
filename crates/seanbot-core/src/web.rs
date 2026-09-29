@@ -234,6 +234,7 @@ mod tests {
             provider: "anysearch".into(),
             api_key: key.map(String::from),
             base_url: base.map(String::from),
+            ..WebConfig::default()
         }
     }
 

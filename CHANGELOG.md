@@ -22,6 +22,9 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 确认提示会暂停思考动画并让出终端，答完继续；启动信息里显示当前权限模式
 - `/yolo` 与 `sean --yolo` 切换到 YOLO 模式（黑名单仍然生效）
 - `sean update`：查询 GitHub 最新版本并原地升级——下载发布资产、校验 SHA256、解包后原子替换自身；取版本与下载优先走 `gh`（认证、代理与限流都交给它），未安装时回退到内置 HTTP。`--check` 只检查，`--version <版本>` 指定版本。Windows 上无法替换正在运行的程序，会提示改用安装脚本
+- 工具上限与默认值可在 `~/.seanbot/config.toml` 中调整，改完立即生效（不必重启）：`agent.max_steps`；`[tools.bash]` 的 `default_timeout` / `max_timeout` / `max_output`；`[tools.read] default_lines`、`[tools.search] default_results`、`[tools.web] max_results` / `page_chars`。默认值与旧版本一致
+- 新内置工具 `config`：Sean 可以查看（`list`、`get`）与修改（`set`、`unset`）上述上限；只读动作直接执行，改动动作会先征求确认，写入时保留配置文件里的注释与其它设置
+- 配置文件保护：`config.toml` 只能由 `config` 工具或用户手动编辑修改——`edit` 拒绝改动、`read` 拒绝读取（避免密钥进入对话）、`bash` 命中路径写法时直接拒绝、`search` 跳过该文件；密钥与 bash 黑名单不能通过工具修改
 
 ### 修复
 

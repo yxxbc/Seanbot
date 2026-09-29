@@ -15,14 +15,14 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::Config,
+    config::{Config, SharedConfig},
     denylist::Denylist,
     event::{AgentEvent, TurnSummary},
     permission::{Decision, PermissionHandler, PermissionRequest},
     prompt,
     registry::ToolRegistry,
     runtime::{RuntimeState, SharedRuntime, shared_runtime},
-    tool::{ReadTracker, Tool, ToolContext, ToolOutput},
+    tool::{ReadTracker, Risk, Tool, ToolContext, ToolOutput},
 };
 
 pub const DEFAULT_MAX_STEPS: u32 = 50;
@@ -45,12 +45,13 @@ pub struct Agent {
     tools: ToolRegistry,
     history: Vec<Message>,
     system: String,
-    config: Arc<Config>,
+    config: SharedConfig,
     permission: Arc<dyn PermissionHandler>,
     reads: ReadTracker,
     denylist: Denylist,
     cwd: PathBuf,
-    max_steps: u32,
+    /// 外部通过 `with_max_steps` 指定的上限；`None` 表示用配置里的 `agent.max_steps`
+    max_steps: Option<u32>,
     runtime: SharedRuntime,
 }
 
@@ -97,6 +98,8 @@ impl Agent {
     ) -> Self {
         let system = prompt::system_prompt(&prompt::PromptEnv::detect(&cwd));
         let denylist = Denylist::new(&config.tools.bash.deny);
+        // 配置包成共享单元：`config` 工具写盘后同步内存，工具与步数上限立即读到新值
+        let config = SharedConfig::new((*config).clone());
         let model = model.into();
         Self {
             provider,
@@ -109,7 +112,7 @@ impl Agent {
             reads: ReadTracker::default(),
             denylist,
             cwd,
-            max_steps: DEFAULT_MAX_STEPS,
+            max_steps: None,
             runtime,
         }
     }
@@ -127,8 +130,14 @@ impl Agent {
     }
 
     pub fn with_max_steps(mut self, max_steps: u32) -> Self {
-        self.max_steps = max_steps;
+        self.max_steps = Some(max_steps);
         self
+    }
+
+    /// 单轮步数上限：`with_max_steps` 优先，否则读配置（`config` 工具改完立即生效）。
+    fn max_steps(&self) -> u32 {
+        self.max_steps
+            .unwrap_or_else(|| self.config.read(|c| c.agent.max_steps))
     }
 
     pub fn model(&self) -> &str {
@@ -182,8 +191,8 @@ impl Agent {
         let mut usage: Option<Usage> = None;
         let mut steps: u32 = 0;
         loop {
-            if steps >= self.max_steps {
-                let err = AgentError::StepLimit(self.max_steps);
+            if steps >= self.max_steps() {
+                let err = AgentError::StepLimit(self.max_steps());
                 emit(&events, AgentEvent::Error(err.to_string())).await;
                 return Err(err);
             }
@@ -384,11 +393,20 @@ impl Agent {
             && let Some(command) = args.get("command").and_then(Value::as_str)
         {
             self.denylist.check(command)?;
+            // 配置文件受保护：bash 不能读写（在确认之前就拒绝，避免打扰用户）
+            if let Ok(config_path) = crate::config::config_path() {
+                crate::config::bash_config_guard(command, &config_path, &self.cwd)?;
+            }
         }
         let request = PermissionRequest {
             tool: call.name.clone(),
             title,
-            risk: tool.risk(),
+            // 只读动作（如 config 的 list/get）按只读处理，不必让用户确认
+            risk: if tool.read_only_call(&args) {
+                Risk::ReadOnly
+            } else {
+                tool.risk()
+            },
             args: args.clone(),
         };
         if let Decision::Deny { reason } = self.permission.ask(request).await {
@@ -403,6 +421,7 @@ impl Agent {
             cancel: cancel.child_token(),
             reads: self.reads.clone(),
             config: self.config.clone(),
+            config_path: crate::config::config_path().ok(),
             runtime: self.runtime.clone(),
         };
         match tokio::time::timeout(TOOL_TIMEOUT, tool.call(args, &ctx)).await {

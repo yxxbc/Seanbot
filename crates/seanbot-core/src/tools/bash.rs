@@ -12,19 +12,40 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
+    config,
     denylist::Denylist,
     tool::{Risk, Tool, ToolContext, ToolError, ToolOutput, opt_u64, str_arg},
 };
 
-const DEFAULT_TIMEOUT: u64 = 120;
-const MAX_TIMEOUT: u64 = 600;
-const MAX_OUTPUT: usize = 30_000;
-const KEEP: usize = 15_000;
 const TITLE_CHARS: usize = 80;
-/// 输出缓冲每侧最多保留的字节数（字符上限的 4 倍，足以容纳 UTF-8）。
-const CAPTURE_BYTES: usize = KEEP * 4;
+/// 配置值的硬边界：配置写错也不至于让缓冲区爆掉或被超时拖死。
+const MAX_TIMEOUT_LIMIT: u64 = 86_400;
+const MIN_OUTPUT: usize = 100;
+const MAX_OUTPUT_LIMIT: usize = 1_000_000;
 /// 进程退出后等待输出管道关闭的宽限期。
 const DRAIN_GRACE: Duration = Duration::from_millis(200);
+
+/// 当前生效的 bash 上限（来自 `[tools.bash]`，并收敛到安全范围）。
+struct Limits {
+    default_timeout: u64,
+    max_timeout: u64,
+    max_output: usize,
+}
+
+impl Limits {
+    fn from_config(ctx: &ToolContext) -> Self {
+        let (default_timeout, max_timeout, max_output) = ctx.config.read(|c| {
+            let bash = &c.tools.bash;
+            (bash.default_timeout, bash.max_timeout, bash.max_output)
+        });
+        let max_timeout = max_timeout.clamp(1, MAX_TIMEOUT_LIMIT);
+        Self {
+            default_timeout: default_timeout.clamp(1, max_timeout),
+            max_timeout,
+            max_output: max_output.clamp(MIN_OUTPUT, MAX_OUTPUT_LIMIT),
+        }
+    }
+}
 
 /// 执行命令所用的解释器。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,12 +154,12 @@ impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bash".into(),
-            description: "在工作目录中执行 shell 命令（有 bash 时使用 bash，Windows 上无 Git Bash 时使用 PowerShell），返回合并后的 stdout 与 stderr 以及退出码。每次调用都是独立进程，不保留 cd 与环境变量；需要时用 && 串联。默认超时 120 秒，可用 timeout 调整（最多 600 秒）。输出超过 30000 字符时只保留首尾。部分危险命令被黑名单禁止。".into(),
+            description: "在工作目录中执行 shell 命令（有 bash 时使用 bash，Windows 上无 Git Bash 时使用 PowerShell），返回合并后的 stdout 与 stderr 以及退出码。每次调用都是独立进程，不保留 cd 与环境变量；需要时用 && 串联。默认超时与输出长度上限来自配置（默认 120 秒、最多 600 秒、30000 字符），可用 timeout 调整（不超过配置上限），可用 config 工具查看或修改上限。输出超过上限时只保留首尾。部分危险命令被黑名单禁止。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "要执行的命令"},
-                    "timeout": {"type": "integer", "description": "超时秒数，默认 120，最大 600"}
+                    "timeout": {"type": "integer", "description": "超时秒数，默认与上限由配置决定（默认 120，最大 600）"}
                 },
                 "required": ["command"]
             }),
@@ -167,10 +188,16 @@ impl Tool for BashTool {
         if command.trim().is_empty() {
             return Err(ToolError::InvalidArgs("command 不能为空".into()));
         }
+        // 配置文件受保护：bash 不能读写它（模型只能用 config 工具改配置）
+        if let Some(config_path) = ctx.config_path.as_deref() {
+            config::bash_config_guard(command, config_path, &ctx.cwd).map_err(ToolError::Failed)?;
+        }
+        let limits = Limits::from_config(ctx);
         let timeout = opt_u64(&args, "timeout")?
-            .unwrap_or(DEFAULT_TIMEOUT)
-            .clamp(1, MAX_TIMEOUT);
-        Denylist::new(&ctx.config.tools.bash.deny)
+            .unwrap_or(limits.default_timeout)
+            .clamp(1, limits.max_timeout);
+        let deny = ctx.config.read(|c| c.tools.bash.deny.clone());
+        Denylist::new(&deny)
             .check(command)
             .map_err(ToolError::Failed)?;
 
@@ -202,6 +229,7 @@ pub(crate) async fn execute(
     timeout: u64,
     ctx: &ToolContext,
 ) -> Result<ToolOutput, ToolError> {
+    let limits = Limits::from_config(ctx);
     let mut cmd = interpreter.command(command);
     cmd.current_dir(&ctx.cwd)
         .stdin(Stdio::null())
@@ -222,7 +250,7 @@ pub(crate) async fn execute(
     // 边读边截断：内存占用有上限，超时或取消时也能拿到已有输出。
     // stderr 单独接一份：bash 侧已用 exec 2>&1 合并，而 Windows PowerShell 5.1 会把
     // 合并后的错误记录写回进程 stderr，只读 stdout 会整段丢掉输出。
-    let capture = Arc::new(Mutex::new(Capture::default()));
+    let capture = Arc::new(Mutex::new(Capture::new(limits.max_output)));
     let out_reader = spawn_capture_reader(stdout, capture.clone());
     let err_reader = spawn_capture_reader(stderr, capture.clone());
 
@@ -291,23 +319,43 @@ enum Ended {
     Cancelled,
 }
 
-/// 边读边截断的输出缓冲：只保留开头与结尾各 [`CAPTURE_BYTES`] 字节。
-#[derive(Debug, Default)]
+/// 边读边截断的输出缓冲：保留开头与结尾，超出部分丢弃并计数。
+#[derive(Debug)]
 pub(crate) struct Capture {
     head: Vec<u8>,
     tail: VecDeque<u8>,
     dropped: usize,
+    /// 输出字符上限（来自配置）
+    max_output: usize,
 }
 
 impl Capture {
+    pub(crate) fn new(max_output: usize) -> Self {
+        Self {
+            head: Vec::new(),
+            tail: VecDeque::new(),
+            dropped: 0,
+            max_output,
+        }
+    }
+
+    /// 单侧最多保留的字符数。
+    fn keep(&self) -> usize {
+        (self.max_output / 2).max(1)
+    }
+
+    /// 单侧最多保留的字节数（字符上限的 4 倍，足以容纳 UTF-8）。
+    fn cap_bytes(&self) -> usize {
+        self.keep() * 4
+    }
+
     pub(crate) fn push(&mut self, data: &[u8]) {
-        let take = CAPTURE_BYTES
-            .saturating_sub(self.head.len())
-            .min(data.len());
+        let cap = self.cap_bytes();
+        let take = cap.saturating_sub(self.head.len()).min(data.len());
         self.head.extend_from_slice(&data[..take]);
         self.tail.extend(&data[take..]);
-        if self.tail.len() > CAPTURE_BYTES {
-            let excess = self.tail.len() - CAPTURE_BYTES;
+        if self.tail.len() > cap {
+            let excess = self.tail.len() - cap;
             self.tail.drain(..excess);
             self.dropped += excess;
         }
@@ -318,27 +366,30 @@ impl Capture {
         if self.dropped == 0 {
             let mut all = self.head.clone();
             all.extend_from_slice(&tail);
-            return truncate_output(&String::from_utf8_lossy(&all));
+            return truncate_output(&String::from_utf8_lossy(&all), self.max_output);
         }
+        let keep = self.keep();
         let head: String = String::from_utf8_lossy(&self.head)
             .chars()
-            .take(KEEP)
+            .take(keep)
             .collect();
         let tail = String::from_utf8_lossy(&tail);
-        let skip = tail.chars().count().saturating_sub(KEEP);
+        let skip = tail.chars().count().saturating_sub(keep);
         let tail: String = tail.chars().skip(skip).collect();
         format!("{head}\n…[省略 {} 字节以上]…\n{tail}", self.dropped)
     }
 }
 
-pub(crate) fn truncate_output(s: &str) -> String {
+/// 超过 `max_output` 个字符时只保留首尾各一半。
+pub(crate) fn truncate_output(s: &str, max_output: usize) -> String {
+    let keep = (max_output / 2).max(1);
     let total = s.chars().count();
-    if total <= MAX_OUTPUT {
+    if total <= max_output {
         return s.to_string();
     }
-    let head: String = s.chars().take(KEEP).collect();
-    let tail: String = s.chars().skip(total - KEEP).collect();
-    format!("{head}\n…[省略 {} 字符]…\n{tail}", total - 2 * KEEP)
+    let head: String = s.chars().take(keep).collect();
+    let tail: String = s.chars().skip(total - keep).collect();
+    format!("{head}\n…[省略 {} 字符]…\n{tail}", total - 2 * keep)
 }
 
 /// 结束整个进程组（Unix）或进程树（Windows），包括命令启动的后台子进程。
@@ -359,12 +410,27 @@ fn kill_group(pid: Option<u32>) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::config::{Config, SharedConfig};
     use std::time::Instant;
 
     fn ctx() -> (tempfile::TempDir, ToolContext) {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
         (dir, ctx)
+    }
+
+    /// 用改过的配置建上下文（验证上限来自配置）。
+    fn ctx_with(configure: impl FnOnce(&mut Config)) -> (tempfile::TempDir, ToolContext) {
+        let (dir, mut ctx) = ctx();
+        let mut cfg = Config::default();
+        configure(&mut cfg);
+        ctx.config = SharedConfig::new(cfg);
+        (dir, ctx)
+    }
+
+    /// 默认配置里的输出上限（与 `[tools.bash] max_output` 默认值一致）。
+    fn max_output() -> usize {
+        Config::default().tools.bash.max_output
     }
 
     async fn run(ctx: &ToolContext, command: &str) -> Result<ToolOutput, ToolError> {
@@ -404,7 +470,7 @@ mod tests {
     async fn capture_reader_appends_to_shared_buffer() {
         use tokio::io::AsyncWriteExt;
         let (mut tx, rx) = tokio::io::duplex(64);
-        let capture = Arc::new(Mutex::new(Capture::default()));
+        let capture = Arc::new(Mutex::new(Capture::new(max_output())));
         let reader = spawn_capture_reader(rx, capture.clone());
         tx.write_all(b"hello ").await.unwrap();
         tx.write_all(b"world").await.unwrap();
@@ -508,19 +574,77 @@ mod tests {
 
     #[test]
     fn capture_is_bounded() {
-        let mut cap = Capture::default();
+        let mut cap = Capture::new(max_output());
         let chunk = vec![b'y'; 64 * 1024];
         for _ in 0..160 {
             cap.push(&chunk); // 共 10 MB
         }
-        assert!(cap.head.len() <= CAPTURE_BYTES);
-        assert!(cap.tail.len() <= CAPTURE_BYTES);
+        assert!(cap.head.len() <= cap.cap_bytes());
+        assert!(cap.tail.len() <= cap.cap_bytes());
         let text = cap.render();
-        assert!(text.chars().count() < MAX_OUTPUT + 100);
+        assert!(text.chars().count() < max_output() + 100);
         assert!(text.contains("…[省略"));
-        let mut small = Capture::default();
+        let mut small = Capture::new(max_output());
         small.push(b"hello\n");
         assert_eq!(small.render(), "hello\n");
+    }
+
+    #[tokio::test]
+    async fn timeouts_come_from_config() {
+        let (_d, ctx) = ctx_with(|c| {
+            c.tools.bash.default_timeout = 1;
+            c.tools.bash.max_timeout = 1;
+        });
+        let started = Instant::now();
+        let out = run(&ctx, "sleep 30").await.unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("[命令执行超时（1 秒）"),
+            "{}",
+            out.content
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn output_limit_comes_from_config() {
+        let (_d, ctx) = ctx_with(|c| c.tools.bash.max_output = 100);
+        let out = run(&ctx, "for i in $(seq 1 50); do echo 1234567890; done")
+            .await
+            .unwrap();
+        assert!(out.content.contains("…[省略"), "{}", out.content);
+        assert!(
+            out.content.chars().count() < 200,
+            "{} 字符",
+            out.content.chars().count()
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_to_touch_config_file() {
+        let (dir, mut guarded) = ctx();
+        let config_path = dir.path().join("config.toml");
+        std::fs::write(&config_path, "provider = \"deepseek\"\n").unwrap();
+        guarded.config_path = Some(config_path.clone());
+        let path = config_path.display();
+        for command in [
+            format!("echo x > {path}"),
+            format!("cat {path}"),
+            "cat ~/.seanbot/config.toml".to_string(),
+            "echo x > $SEANBOT_HOME/config.toml".to_string(),
+            "echo x > ${SEANBOT_HOME}/config.toml".to_string(),
+        ] {
+            let err = run(&guarded, &command).await.unwrap_err();
+            assert!(
+                err.to_string().contains("受保护的配置文件"),
+                "{command}：{err}"
+            );
+        }
+        // 工作目录里同名的 config.toml 不属于保护范围
+        let (dir2, ctx2) = ctx();
+        std::fs::write(dir2.path().join("config.toml"), "x = 1\n").unwrap();
+        let out = run(&ctx2, "cat config.toml").await.unwrap();
+        assert!(out.content.starts_with("x = 1"), "{}", out.content);
     }
 
     #[tokio::test]
@@ -547,11 +671,14 @@ mod tests {
     #[test]
     fn truncates_long_output_keeping_head_and_tail() {
         let s = format!("{}{}", "a".repeat(20_000), "b".repeat(20_000));
-        let t = truncate_output(&s);
+        let t = truncate_output(&s, max_output());
         assert!(t.starts_with(&"a".repeat(15_000)));
         assert!(t.ends_with(&"b".repeat(15_000)));
         assert!(t.contains("…[省略 10000 字符]…"));
-        assert_eq!(truncate_output("short"), "short");
+        assert_eq!(truncate_output("short", max_output()), "short");
+        // 上限调小后同样按首尾各一半保留
+        let t = truncate_output(&"x".repeat(1000), 100);
+        assert!(t.contains("…[省略 900 字符]…"), "{t}");
     }
 
     #[test]

@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    config::Config,
+    config::SharedConfig,
     runtime::{RuntimeState, SharedRuntime, shared_runtime},
 };
 
@@ -123,7 +123,10 @@ pub struct ToolContext {
     pub cwd: PathBuf,
     pub cancel: CancellationToken,
     pub reads: ReadTracker,
-    pub config: Arc<Config>,
+    /// 共享配置：工具每次调用读当前值，`config` 工具改完立即生效
+    pub config: SharedConfig,
+    /// 配置文件路径；`None` 表示取不到数据目录（此时 `config` 工具不可用）
+    pub config_path: Option<PathBuf>,
     pub runtime: SharedRuntime,
 }
 
@@ -133,9 +136,24 @@ impl ToolContext {
             cwd,
             cancel: CancellationToken::new(),
             reads: ReadTracker::default(),
-            config: Arc::new(Config::default()),
+            config: SharedConfig::default(),
+            config_path: crate::config::config_path().ok(),
             runtime: shared_runtime(RuntimeState::default()),
         }
+    }
+
+    /// 该路径是否受保护的配置文件（内置工具不得修改、也不通过 read 泄露内容）。
+    pub fn is_config_file(&self, path: &Path) -> bool {
+        self.config_path
+            .as_deref()
+            .is_some_and(|cfg| crate::config::is_config_file(path, cfg))
+    }
+
+    /// 在该路径上拒绝操作时的统一报错文案。
+    pub fn config_file_error(&self, action: &str) -> ToolError {
+        ToolError::Failed(format!(
+            "config.toml 是受保护的配置文件，{action}；请用 config 工具（或手动编辑配置文件）"
+        ))
     }
 }
 
@@ -146,6 +164,10 @@ pub trait Tool: Send + Sync {
         ToolSource::Builtin
     }
     fn risk(&self) -> Risk;
+    /// 本次调用是否只读：只读动作按 `Risk::ReadOnly` 处理，跳过确认（默认按 `risk()`）。
+    fn read_only_call(&self, _args: &Value) -> bool {
+        self.risk() == Risk::ReadOnly
+    }
     /// UI 显示用的参数摘要，例如 bash 的命令、read 的路径。
     fn title(&self, args: &Value) -> String;
     /// 供后续确认界面使用，本版 CLI 不调用。
@@ -198,8 +220,8 @@ fn resolve_real(path: &Path) -> PathBuf {
     real
 }
 
-/// 只做词法处理：去掉 `.`，把 `..` 与前一段抵消。
-fn lexical_normalize(path: &Path) -> PathBuf {
+/// 只做词法处理：去掉 `.`，把 `..` 与前一段抵消（配置文件比较等场景复用）。
+pub(crate) fn lexical_normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {

@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use futures::StreamExt;
 use seanbot_core::{
-    Agent, AgentError, AgentEvent, AllowAll, Decision, PermissionHandler, PermissionRequest,
+    Agent, AgentError, AgentEvent, AllowAll, Decision, PermissionHandler, PermissionRequest, Risk,
     TurnSummary, builtin_registry, config::Config,
 };
 use seanbot_provider::{
@@ -91,6 +91,37 @@ impl PermissionHandler for DenyAll {
     }
 }
 
+/// 像交互式确认那样：只读放行、改动要求确认，并记录每次拿到的风险级别。
+struct StrictConfirm {
+    seen: Mutex<Vec<Risk>>,
+}
+
+impl StrictConfirm {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            seen: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn seen(&self) -> Vec<Risk> {
+        self.seen.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl PermissionHandler for StrictConfirm {
+    async fn ask(&self, req: PermissionRequest) -> Decision {
+        self.seen.lock().unwrap().push(req.risk);
+        if req.risk == Risk::ReadOnly {
+            Decision::AllowOnce
+        } else {
+            Decision::Deny {
+                reason: Some("需要用户确认".into()),
+            }
+        }
+    }
+}
+
 // ---------- 助手 ----------
 
 fn text(s: &str) -> Result<StreamChunk, ProviderError> {
@@ -125,13 +156,22 @@ struct Harness {
 }
 
 fn harness_with(steps: Vec<Step>, permission: Arc<dyn PermissionHandler>) -> Harness {
+    harness_full(steps, Config::default(), permission)
+}
+
+/// 自定义配置与权限处理器（例如验证上限来自配置、只读动作免确认）。
+fn harness_full(
+    steps: Vec<Step>,
+    config: Config,
+    permission: Arc<dyn PermissionHandler>,
+) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let provider = FakeProvider::new(steps);
     let agent = Agent::new(
         provider.clone(),
         "fake-model",
-        builtin_registry(&Config::default()),
-        Arc::new(Config::default()),
+        builtin_registry(&config),
+        Arc::new(config),
         permission,
         dir.path().to_path_buf(),
     );
@@ -195,6 +235,64 @@ fn tool_messages(history: &[Message]) -> Vec<&str> {
 }
 
 // ---------- 测试 ----------
+
+#[tokio::test]
+async fn step_limit_comes_from_config() {
+    let mut cfg = Config::default();
+    cfg.agent.max_steps = 1;
+    let mut h = harness_full(
+        vec![tool_step(vec![call(
+            "c1",
+            "read",
+            r#"{"path":"missing.txt"}"#,
+        )])],
+        cfg,
+        Arc::new(AllowAll),
+    );
+    let (result, events) = run(&mut h.agent, "q", CancellationToken::new()).await;
+    assert!(matches!(result, Err(AgentError::StepLimit(1))));
+    assert!(events.contains(&AgentEvent::Error("已达到单轮步数上限（1）".into())));
+}
+
+/// config 的只读动作（list/get）按只读处理，不需要用户确认。
+#[tokio::test]
+async fn config_read_only_action_skips_confirmation() {
+    let confirm = StrictConfirm::new();
+    let mut h = harness_with(
+        vec![
+            tool_step(vec![call("c1", "config", r#"{"action":"list"}"#)]),
+            reply("好"),
+        ],
+        confirm.clone(),
+    );
+    let (result, _) = run(&mut h.agent, "看看配置", CancellationToken::new()).await;
+    result.unwrap();
+    let results = tool_messages(h.agent.history());
+    assert!(results[0].contains("可修改"), "{results:?}");
+    assert_eq!(confirm.seen(), [Risk::ReadOnly]);
+}
+
+/// config 的改动动作需要用户确认：被拒绝时配置文件不会被写入。
+#[tokio::test]
+async fn config_set_requires_confirmation() {
+    let confirm = StrictConfirm::new();
+    let mut h = harness_with(
+        vec![
+            tool_step(vec![call(
+                "c1",
+                "config",
+                r#"{"action":"set","key":"tools.bash.max_output","value":123}"#,
+            )]),
+            reply("好"),
+        ],
+        confirm.clone(),
+    );
+    let (result, _) = run(&mut h.agent, "改配置", CancellationToken::new()).await;
+    result.unwrap();
+    let results = tool_messages(h.agent.history());
+    assert!(results[0].contains("需要用户确认"), "{results:?}");
+    assert_eq!(confirm.seen(), [Risk::Mutating]);
+}
 
 #[tokio::test]
 async fn plain_reply() {
@@ -421,6 +519,7 @@ async fn request_prefix_is_stable_across_steps_and_turns() {
         names,
         [
             "bash",
+            "config",
             "edit",
             "perceive",
             "read",

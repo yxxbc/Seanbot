@@ -18,7 +18,7 @@ impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".into(),
-            description: "精确替换文件中的文本。old_string 必须与文件内容逐字一致（含缩进与空白）且在文件中唯一出现；需要替换全部出现处时设置 replace_all。修改已有文件前必须先用 read 读取；文件内容没变时读一次即可连续编辑多次。old_string 为空字符串且文件不存在时新建文件（自动创建父目录），内容为 new_string。唯一性失败会列出每一处出现的行号；把 read 输出的行号前缀一起复制进来时会被自动忽略并在结果中说明。".into(),
+            description: "精确替换文件中的文本。old_string 必须与文件内容逐字一致（含缩进与空白）且在文件中唯一出现；需要替换全部出现处时设置 replace_all。修改已有文件前必须先用 read 读取；文件内容没变时读一次即可连续编辑多次。old_string 为空字符串且文件不存在时新建文件（自动创建父目录），内容为 new_string。唯一性失败会列出每一处出现的行号；把 read 输出的行号前缀一起复制进来时会被自动忽略并在结果中说明。配置文件 config.toml 受保护，不能通过本工具修改（请用 config 工具或手动编辑）。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -45,6 +45,11 @@ impl Tool for EditTool {
 
     async fn preview(&self, args: &Value, ctx: &ToolContext) -> Option<String> {
         let raw = args.get("path")?.as_str()?;
+        if ctx.is_config_file(&resolve_path(&ctx.cwd, raw)) {
+            return Some(
+                "（config.toml 是受保护的配置文件，不能修改；请用 config 工具或手动编辑）".into(),
+            );
+        }
         let old = args.get("old_string")?.as_str()?;
         let new = args.get("new_string")?.as_str()?;
         let replace_all = args
@@ -73,6 +78,10 @@ impl Tool for EditTool {
         let new = str_arg(&args, "new_string")?;
         let replace_all = opt_bool(&args, "replace_all")?.unwrap_or(false);
         let path = resolve_path(&ctx.cwd, raw);
+        // 配置文件受保护：内置工具不能改，只能用 config 工具或手动编辑
+        if ctx.is_config_file(&path) {
+            return Err(ctx.config_file_error("edit 不能修改它"));
+        }
 
         if old.is_empty() {
             return create_file(raw, &path, new, ctx).await;
@@ -866,6 +875,33 @@ mod tests {
             .unwrap();
         assert_eq!(file(&dir, "a.txt"), "x\ny\n");
         assert!(out.content.contains("LF"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn refuses_to_edit_config_file() {
+        let (dir, mut ctx) = setup("");
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "provider = \"deepseek\"\n").unwrap();
+        ctx.config_path = Some(path.clone());
+        let raw = path.to_string_lossy().to_string();
+        let err = EditTool
+            .call(
+                json!({"path": raw, "old_string": "deepseek", "new_string": "other"}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("受保护的配置文件"), "{err}");
+        assert_eq!(file(&dir, "config.toml"), "provider = \"deepseek\"\n");
+        // 预览也会给出提示
+        let preview = EditTool
+            .preview(
+                &json!({"path": raw, "old_string": "deepseek", "new_string": "other"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(preview.contains("受保护的配置文件"), "{preview}");
     }
 
     #[tokio::test]

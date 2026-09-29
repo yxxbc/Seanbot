@@ -7,7 +7,6 @@ use crate::tool::{
     resolve_path, str_arg,
 };
 
-const DEFAULT_LIMIT: u64 = 2000;
 const MAX_LINE_CHARS: usize = 2000;
 
 pub struct ReadTool;
@@ -17,7 +16,7 @@ impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".into(),
-            description: "读取文本文件，返回带行号的内容（每行格式：行号<TAB>内容）。默认从第 1 行起最多读取 2000 行，可用 offset（起始行号，从 1 开始）和 limit 分段读取。修改已有文件前必须先用本工具读取；记录的是文件内容指纹，内容没变就不必重复读取。".into(),
+            description: "读取文本文件，返回带行号的内容（每行格式：行号<TAB>内容）。默认从第 1 行起读取（默认行数见配置，默认 2000 行），可用 offset（起始行号，从 1 开始）和 limit 分段读取。修改已有文件前必须先用本工具读取；记录的是文件内容指纹，内容没变就不必重复读取。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -44,8 +43,13 @@ impl Tool for ReadTool {
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let raw = str_arg(&args, "path")?;
         let path = resolve_path(&ctx.cwd, raw);
+        // 配置文件含 API key：内置工具不能读，也不能改（只能用 config 工具或手动编辑）
+        if ctx.is_config_file(&path) {
+            return Err(ctx.config_file_error("read 不能读取它"));
+        }
         let offset = opt_u64(&args, "offset")?.unwrap_or(1).max(1) as usize;
-        let limit = opt_u64(&args, "limit")?.unwrap_or(DEFAULT_LIMIT).max(1) as usize;
+        let default_lines = ctx.config.read(|c| c.tools.read.default_lines);
+        let limit = opt_u64(&args, "limit")?.unwrap_or(default_lines).max(1) as usize;
 
         let meta = tokio::fs::metadata(&path)
             .await
@@ -107,6 +111,29 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ctx = ToolContext::new(dir.path().to_path_buf());
         (dir, ctx)
+    }
+
+    #[tokio::test]
+    async fn refuses_to_read_config_file() {
+        let (dir, mut ctx) = setup();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "provider = \"deepseek\"\n[providers.deepseek]\napi_key = \"sk-secret\"\n",
+        )
+        .unwrap();
+        ctx.config_path = Some(path.clone());
+        let err = ReadTool
+            .call(json!({"path": path.to_string_lossy().to_string()}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("受保护的配置文件"), "{err}");
+        // 工作目录里的同名文件不受影响
+        fs::write(dir.path().join("config.toml.bak"), "x = 1\n").unwrap();
+        ReadTool
+            .call(json!({"path": "config.toml.bak"}), &ctx)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
