@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 
-include!(concat!(env!("OUT_DIR"), "/kb_embedded.rs"));
+use crate::embedded::EMBEDDED_FILES;
 
 /// 远程索引与本地各存一份：它就是"最近一次应用成功的内置条目清单"。
 const INDEX_FILE: &str = "index.json";

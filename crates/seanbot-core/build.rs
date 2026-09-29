@@ -1,11 +1,14 @@
-//! 把 kb/ 目录下的 markdown 编进二进制。
+//! 把 kb/ 与 skills/ 编进二进制。
 //!
-//! 内置知识库必须随安装包一起到手：装完 sean 就能查，不必先联网。
-//! 这里生成 OUT_DIR/kb_embedded.rs，内容形如：
+//! - 内置知识库必须随安装包一起到手：装完 sean 就能查，不必先联网
+//! - 官方技能同理，而且官方与用户自建的技能要能区分（官方只读、用户的可写）
+//!
+//! 生成 OUT_DIR/embedded.rs（由 src/embedded.rs include），内容形如：
 //!     pub(crate) static EMBEDDED_FILES: &[(&str, &str)] = &[("AboutSeanbot/01-Seanbot.md", include_str!(...)), ...];
-//! 因此 kb/ 下新增或删除文件不需要改任何 Rust 代码。
+//!     pub(crate) static EMBEDDED_SKILLS: &[(&str, &str)] = &[("write-skill/SKILL.md", include_str!(...)), ...];
+//! 因此 kb/ 与 skills/ 下新增或删除文件都不需要改任何 Rust 代码。
 //!
-//! 注意：只收 .md；index.json 由 kb 模块单独 include（它是更新协议用的元数据，不是条目）。
+//! 只收 .md；kb/index.json 由 kb 模块单独 include（它是更新协议用的元数据，不是条目）。
 
 use std::{
     env, fs,
@@ -13,6 +16,9 @@ use std::{
 };
 
 fn collect(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
@@ -29,18 +35,13 @@ fn collect(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> std::io
     Ok(())
 }
 
-fn main() {
-    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo 一定设置该变量"));
-    let kb = manifest.join("../..").join("kb");
-    println!("cargo:rerun-if-changed={}", kb.display());
-
-    let mut files = Vec::new();
-    collect(&kb, &kb, &mut files).unwrap_or_else(|e| panic!("读取 {} 失败：{e}", kb.display()));
-    files.sort();
-
-    let mut src = String::from("// 由 build.rs 生成：kb/ 下所有 markdown 的全文。\n");
-    src.push_str("pub(crate) static EMBEDDED_FILES: &[(&str, &str)] = &[\n");
-    for (rel, abs) in &files {
+/// 写出一张静态表。
+fn emit(src: &mut String, const_name: &str, title: &str, files: &[(String, PathBuf)]) {
+    src.push_str(&format!("/// 由 build.rs 生成：{}\n", title));
+    src.push_str(&format!(
+        "pub(crate) static {const_name}: &[(&str, &str)] = &[\n"
+    ));
+    for (rel, abs) in files {
         println!("cargo:rerun-if-changed={}", abs.display());
         src.push_str(&format!(
             "    ({:?}, include_str!({:?})),\n",
@@ -48,9 +49,40 @@ fn main() {
             abs.to_string_lossy()
         ));
     }
-    src.push_str("];\n");
+    src.push_str("];\n\n");
+}
 
-    let out =
-        PathBuf::from(env::var("OUT_DIR").expect("cargo 一定设置该变量")).join("kb_embedded.rs");
+fn main() {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("cargo 一定设置该变量"));
+    let root = manifest.join("../..");
+    let kb = root.join("kb");
+    let skills = root.join("skills");
+    println!("cargo:rerun-if-changed={}", kb.display());
+    println!("cargo:rerun-if-changed={}", skills.display());
+
+    let mut kb_files = Vec::new();
+    collect(&kb, &kb, &mut kb_files).unwrap_or_else(|e| panic!("读取 {} 失败：{e}", kb.display()));
+    kb_files.sort();
+
+    let mut skill_files = Vec::new();
+    collect(&skills, &skills, &mut skill_files)
+        .unwrap_or_else(|e| panic!("读取 {} 失败：{e}", skills.display()));
+    skill_files.sort();
+
+    let mut src = String::from("// 由 build.rs 生成，请勿手改。\n\n");
+    emit(
+        &mut src,
+        "EMBEDDED_FILES",
+        "内置知识库条目（kb/）",
+        &kb_files,
+    );
+    emit(
+        &mut src,
+        "EMBEDDED_SKILLS",
+        "官方技能（skills/）",
+        &skill_files,
+    );
+
+    let out = PathBuf::from(env::var("OUT_DIR").expect("cargo 一定设置该变量")).join("embedded.rs");
     fs::write(&out, src).unwrap_or_else(|e| panic!("写入 {} 失败：{e}", out.display()));
 }

@@ -1,17 +1,21 @@
 //! 技能：一个目录里的 `SKILL.md`（或单个 `.md` 文件），frontmatter 里带 name / description。
 //!
-//! 两处来源：
+//! 三处来源，同名时优先级从高到低：
 //! - 项目：`<工作目录>/.seanbot/skills/`（边找边向上，越近优先级越高）
-//! - 全局：`<数据目录>/skills/`
+//! - 全局：`<数据目录>/skills/`（用户自建）
+//! - 官方：`<数据目录>/skills-builtin/`（随二进制分发、只读；首次使用时释放）
 //!
+//! 前两者合称**外置技能**（可写，靠 `create_skill` 或手写文件维护），官方那处只读。
 //! 系统提示词里只列 name + description（省上下文），正文由 `skill` 工具按需加载——
 //! 这是这套机制的要点：知道有什么技能，但只在真正要做那件事时才读全文。
 
 use std::{
     collections::HashSet,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
+
+use crate::embedded::EMBEDDED_SKILLS;
 
 /// 目录形式的技能入口文件名。
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -19,6 +23,8 @@ pub const SKILL_FILE: &str = "SKILL.md";
 pub const PROJECT_SUBDIR: &str = ".seanbot/skills";
 /// 全局技能相对数据目录的位置。
 pub const GLOBAL_SUBDIR: &str = "skills";
+/// 官方技能相对数据目录的位置（从二进制内嵌内容释放，只读）。
+pub const OFFICIAL_SUBDIR: &str = "skills-builtin";
 /// 单次加载技能正文的字节上限，超出截断。
 pub const MAX_SKILL_BYTES: usize = 64 * 1024;
 /// 提示词里 description 的字符上限。
@@ -31,8 +37,12 @@ const MAX_SIBLINGS: usize = 20;
 /// 技能来源。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
+    /// 全局外置技能：`<数据目录>/skills/`
     Global,
+    /// 项目外置技能：`<工作目录>/.seanbot/skills/`
     Project,
+    /// 官方技能：随 Seanbot 分发、只读
+    Official,
 }
 
 impl Scope {
@@ -40,8 +50,46 @@ impl Scope {
         match self {
             Self::Global => "全局",
             Self::Project => "项目",
+            Self::Official => "官方",
         }
     }
+
+    /// 外置（用户或 agent 自己写的、可改）还是官方（只读）。
+    pub fn is_external(self) -> bool {
+        !matches!(self, Self::Official)
+    }
+
+    /// 优先级：项目 > 全局 > 官方（数字小的排前面、同名时优先）。
+    fn rank(self) -> u8 {
+        match self {
+            Self::Project => 0,
+            Self::Global => 1,
+            Self::Official => 2,
+        }
+    }
+}
+
+/// 官方技能目录：`<数据目录>/skills-builtin`。
+pub fn official_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(OFFICIAL_SUBDIR)
+}
+
+/// 首次使用时把内嵌的官方技能释放到 `<数据目录>/skills-builtin`；只补缺失的文件。
+pub fn ensure_official(data_dir: &Path) -> Result<Vec<String>, io::Error> {
+    let dir = official_dir(data_dir);
+    let mut written = Vec::new();
+    for (name, body) in EMBEDDED_SKILLS {
+        let path = dir.join(name);
+        if path.is_file() {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&path, body)?;
+        written.push((*name).to_string());
+    }
+    Ok(written)
 }
 
 /// 一个可用技能。
@@ -80,7 +128,9 @@ pub struct LoadedSkill {
     pub siblings: Vec<String>,
 }
 
-/// 发现技能：项目（越近越优先）在前，然后是全局；同名只保留优先级最高的那个。
+/// 发现技能：项目（越近越优先）→ 全局 → 官方；同名只保留优先级最高的那个。
+///
+/// 顺带释放官方技能（只补缺失文件），失败不阻断发现，只记一条提示。
 pub fn discover(cwd: &Path, data_dir: Option<&Path>) -> Discovery {
     let mut out = Discovery::default();
     let mut seen = HashSet::new();
@@ -92,7 +142,11 @@ pub fn discover(cwd: &Path, data_dir: Option<&Path>) -> Discovery {
         current = dir.parent().map(Path::to_path_buf);
     }
     if let Some(dir) = data_dir {
+        if let Err(e) = ensure_official(dir) {
+            out.warnings.push(format!("释放官方技能失败：{e}"));
+        }
         roots.push((Scope::Global, dir.join(GLOBAL_SUBDIR)));
+        roots.push((Scope::Official, official_dir(dir)));
     }
 
     let mut claimed = HashSet::new();
@@ -110,11 +164,11 @@ pub fn discover(cwd: &Path, data_dir: Option<&Path>) -> Discovery {
         }
     }
 
-    // 项目在前、同来源按名字排序，读起来稳定
+    // 项目 → 全局 → 官方；同来源按名字排序，读起来稳定
     out.skills.sort_by(|a, b| {
-        let scope = |s: Scope| matches!(s, Scope::Project) as u8;
-        scope(b.scope)
-            .cmp(&scope(a.scope))
+        a.scope
+            .rank()
+            .cmp(&b.scope.rank())
             .then_with(|| a.name.cmp(&b.name))
     });
     out
@@ -378,8 +432,15 @@ mod tests {
         for expected in ["fix-imports", "quick", "legacy", "deploy"] {
             assert!(names.contains(&expected), "{expected} 没被发现：{names:?}");
         }
-        assert_eq!(found.skills[0].scope, Scope::Project);
-        assert_eq!(found.skills.last().unwrap().scope, Scope::Global);
+        assert_eq!(found.skills[0].scope, Scope::Project, "项目在最前");
+        assert_eq!(
+            found.skills.last().unwrap().scope,
+            Scope::Official,
+            "官方在最后"
+        );
+        // 官方技能是首次发现时从内嵌内容释放的
+        assert!(find(&found.skills, "write-skill").is_some(), "{names:?}");
+        assert!(find(&found.skills, "code-review").is_some(), "{names:?}");
 
         let legacy = find(&found.skills, "legacy").unwrap();
         assert_eq!(legacy.description, "第一行说明");

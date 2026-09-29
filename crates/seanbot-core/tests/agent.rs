@@ -520,6 +520,7 @@ async fn request_prefix_is_stable_across_steps_and_turns() {
         [
             "bash",
             "config",
+            "create_skill",
             "edit",
             "kb_add",
             "kb_edit",

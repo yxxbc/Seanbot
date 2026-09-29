@@ -10,6 +10,7 @@ pub mod web;
 
 mod agent;
 mod denylist;
+mod embedded;
 mod event;
 mod permission;
 mod prompt;

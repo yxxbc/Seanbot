@@ -150,13 +150,10 @@ mod tests {
     #[tokio::test]
     async fn lists_when_no_name_given() {
         let (dir, ctx) = setup();
+        // 官方技能随二进制分发，任何环境里都至少有它们
         let out = SkillTool.call(json!({}), &ctx).await.unwrap();
-        assert!(
-            out.content.contains("当前没有发现任何技能"),
-            "{}",
-            out.content
-        );
-        assert!(out.content.contains(".seanbot/skills"), "{}", out.content);
+        assert!(out.content.contains("官方"), "{}", out.content);
+        assert!(out.content.contains("write-skill"), "{}", out.content);
 
         add_skill(
             dir.path(),

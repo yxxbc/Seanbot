@@ -2,6 +2,7 @@
 
 mod bash;
 mod config;
+mod create_skill;
 mod edit;
 mod kb;
 mod perceive;
@@ -13,6 +14,7 @@ mod web;
 pub use bash::BashTool;
 pub(crate) use bash::interpreter_label;
 pub use config::ConfigTool;
+pub use create_skill::CreateSkillTool;
 pub use edit::EditTool;
 pub use kb::{KbAddTool, KbEditTool, KbListTool, KbSearchTool, KbUpdateTool};
 pub use perceive::PerceiveTool;
@@ -29,9 +31,10 @@ use crate::{config::Config, registry::ToolRegistry, tool::Tool};
 pub fn builtin_registry(config: &Config) -> ToolRegistry {
     let web = crate::web::backend_from_config(config);
     let mut registry = ToolRegistry::default();
-    let tools: [Arc<dyn Tool>; 14] = [
+    let tools: [Arc<dyn Tool>; 15] = [
         Arc::new(BashTool),
         Arc::new(ConfigTool),
+        Arc::new(CreateSkillTool),
         Arc::new(EditTool),
         Arc::new(KbAddTool),
         Arc::new(KbEditTool),
@@ -64,6 +67,7 @@ mod tests {
             [
                 "bash",
                 "config",
+                "create_skill",
                 "edit",
                 "kb_add",
                 "kb_edit",
