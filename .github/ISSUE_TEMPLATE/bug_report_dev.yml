@@ -1,0 +1,121 @@
+name: 🐛 Developer Bug Report
+description: File a detailed, technical bug report (English)
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For maintainers and contributors filing a technical report.
+        Keep it minimal and precise — a good report gets fixed faster.
+        **Redact all credentials** (`sk-...`) before posting logs or config.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and found no duplicate
+          required: true
+        - label: I reproduced this on the latest `main` (or the latest release)
+          required: true
+        - label: Logs and config included below have credentials redacted
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `sean --version`, or `git rev-parse --short HEAD`
+      placeholder: e.g. 0.1.0 / 0706d47
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS + version + architecture
+      placeholder: e.g. macOS 15.2 (arm64) / Ubuntu 24.04 (x86_64)
+    validations:
+      required: true
+
+  - type: input
+    id: toolchain
+    attributes:
+      label: Toolchain (when built from source)
+      description: Output of `rustc --version && cargo --version`
+      placeholder: rustc 1.85.0 / cargo 1.85.0
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider / model
+      options:
+        - DeepSeek official API
+        - Other OpenAI-compatible provider (specify under Additional context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal and deterministic; include exact commands and inputs
+      placeholder: |
+        1. run `sean -p "..."` in a directory containing ...
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: dropdown
+    id: determinism
+    attributes:
+      label: Determinism
+      options:
+        - Always reproducible
+        - Intermittent
+        - Observed once
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / backtrace
+      description: Full output preferred; redact credentials
+      render: shell
+
+  - type: textarea
+    id: regression
+    attributes:
+      label: Regression info
+      description: Did this work in an earlier version or commit? Include bisect results if available
+
+  - type: textarea
+    id: investigation
+    attributes:
+      label: Investigation / hypothesis
+      description: Root-cause hypothesis, relevant files, traces, or anything you already dug into
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Related issues / PRs, screenshots, redacted config excerpts
