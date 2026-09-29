@@ -138,7 +138,7 @@ pub fn resolve_path(cwd: &Path, raw: &str) -> PathBuf {
 }
 
 /// 判断 `path` 是否位于 `cwd` 之内：按真实路径判断（解析符号链接与 `..`），
-/// 目标不存在时规范化其最近的已存在祖先再拼接剩余部分。
+/// 目标不存在时对不存在的部分按字面拼接。
 pub fn is_within(cwd: &Path, path: &Path) -> bool {
     let base = std::fs::canonicalize(cwd).unwrap_or_else(|_| lexical_normalize(cwd));
     let joined = if path.is_absolute() {
@@ -146,29 +146,28 @@ pub fn is_within(cwd: &Path, path: &Path) -> bool {
     } else {
         cwd.join(path)
     };
-    normalize_existing(&joined).starts_with(&base)
+    resolve_real(&joined).starts_with(&base)
 }
 
-fn normalize_existing(path: &Path) -> PathBuf {
-    let lexical = lexical_normalize(path);
-    let mut existing = lexical.clone();
-    let mut rest = Vec::new();
-    loop {
-        if let Ok(real) = std::fs::canonicalize(&existing) {
-            let mut out = real;
-            for part in rest.iter().rev() {
-                out.push(part);
+/// 从左到右逐段解析：`..` 作用在已解析符号链接的真实位置上，已存在的部分随时规范化为真实路径。
+/// 反过来先做词法压平会把 `link/../x`（link 指向工作目录之外）误判为工作目录内。
+fn resolve_real(path: &Path) -> PathBuf {
+    let mut real = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                real.pop();
             }
-            return out;
-        }
-        match (existing.parent(), existing.file_name()) {
-            (Some(parent), Some(name)) => {
-                rest.push(name.to_os_string());
-                existing = parent.to_path_buf();
+            other => {
+                real.push(other.as_os_str());
+                if let Ok(resolved) = std::fs::canonicalize(&real) {
+                    real = resolved;
+                }
             }
-            _ => return lexical,
         }
     }
+    real
 }
 
 /// 只做词法处理：去掉 `.`，把 `..` 与前一段抵消。
@@ -307,5 +306,19 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(other.path(), dir.path().join("link")).unwrap();
         assert!(!is_within(dir.path(), Path::new("link/f.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_within_resolves_parent_after_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(other.path(), dir.path().join("link")).unwrap();
+        // `..` 作用于符号链接解析后的真实位置：link/.. 是 other 的父目录，不是 dir
+        assert!(!is_within(dir.path(), Path::new("link/../x.txt")));
+        // 符号链接指向工作目录内部时，仍判定为内部
+        std::fs::create_dir(dir.path().join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("in")).unwrap();
+        assert!(is_within(dir.path(), Path::new("in/../x.txt")));
     }
 }
