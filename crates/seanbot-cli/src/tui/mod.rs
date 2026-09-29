@@ -32,15 +32,15 @@ use crossterm::{
         KeyModifiers,
     },
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
-    Frame, Terminal, TerminalOptions, Viewport,
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 use seanbot_core::{Agent, AgentEvent, Decision, config::Config};
 use tokio::sync::mpsc;
@@ -49,8 +49,6 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::{format, journal::Journal, render, repl};
 
-/// 活动区高度（阶段 2c 会改成随内容动态变化）。
-const MIN_VIEWPORT_HEIGHT: u16 = 4;
 /// 动画/重绘节拍。
 const TICK: Duration = Duration::from_millis(80);
 /// 连按两次 Ctrl+C 退出的时间窗。
@@ -296,7 +294,10 @@ pub struct App {
     /// 当前工作目录（状态栏显示用）
     cwd: String,
     /// 待写进终端滚动区的行（写出去就从内存里丢掉）
+    /// 已完成输出：全屏模式下一律留在应用内（不再推进终端滚动区）
     pending: Vec<Line<'static>>,
+    /// 历史滚动：0 = 跟随最新，越大越往上看
+    scroll: u16,
     /// 本轮助手正文的 Markdown 流式渲染器
     markdown: Option<crate::markdown::Streaming>,
     /// 还没冻结、留在活动区显示的尾部
@@ -331,6 +332,7 @@ impl App {
             welcome: true,
             cwd: cwd.to_string(),
             pending: Vec::new(),
+            scroll: 0,
             markdown: None,
             tail: Vec::new(),
             width: 80,
@@ -637,6 +639,7 @@ impl App {
     }
 
     /// 取走待写进滚动区的行。
+    #[allow(dead_code)]
     pub fn take_pending(&mut self) -> Vec<Line<'static>> {
         std::mem::take(&mut self.pending)
     }
@@ -646,8 +649,54 @@ impl App {
         self.width = width;
     }
 
-    /// 活动区高度：流式尾部 + 输入行 + 状态栏，不超过终端高度一半。
-    pub fn desired_height(&self, term_height: u16) -> u16 {
+    /// 处理滚动相关的输入（鼠标滚轮 / PgUp / PgDn / Home / End）。
+    /// 返回 true 表示这个事件已被滚动消费掉。
+    pub fn scroll_event(&mut self, event: &Event) -> bool {
+        let step = 3u16;
+        match event {
+            Event::Mouse(mouse) => match mouse.kind {
+                crossterm::event::MouseEventKind::ScrollUp => {
+                    self.scroll = self.scroll.saturating_add(step)
+                }
+                crossterm::event::MouseEventKind::ScrollDown => {
+                    self.scroll = self.scroll.saturating_sub(step)
+                }
+                _ => return false,
+            },
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::PageUp => self.scroll = self.scroll.saturating_add(10),
+                KeyCode::PageDown => self.scroll = self.scroll.saturating_sub(10),
+                KeyCode::Home => self.scroll = u16::MAX,
+                KeyCode::End => self.scroll = 0,
+                _ => return false,
+            },
+            _ => return false,
+        }
+        true
+    }
+
+    /// 历史区内容：已完成输出 + 欢迎框（首屏）+ 还没冻结的流式尾部。
+    fn history_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = self.pending.clone();
+        if self.welcome {
+            lines.extend(self.banner());
+        }
+        lines.extend(self.tail.iter().cloned());
+        lines
+    }
+
+    /// 历史区视图：默认贴底，向上滚动由 `scroll` 控制。
+    fn history_view(&self, height: usize) -> Paragraph<'static> {
+        let lines = self.history_lines();
+        let hidden = lines.len().saturating_sub(height).min(u16::MAX as usize) as u16;
+        let offset = hidden.saturating_sub(self.scroll);
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .scroll((offset, 0))
+    }
+
+    #[allow(dead_code)]
+    fn legacy_desired_height(&self, term_height: u16) -> u16 {
         // 没有流式内容时活动区只留 1 行：以前 max(3) 硬撑会在输入框上方留一大片空白
         let body = if self.welcome {
             8
@@ -675,17 +724,6 @@ impl App {
     pub fn tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
         self.mascot.tick();
-    }
-
-    /// 活动区内容：还没冻结的流式尾部（只保留最后几行）。
-    fn activity_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        if self.welcome {
-            lines.extend(self.banner());
-        }
-        lines.extend(self.tail.iter().cloned());
-        let skip = lines.len().saturating_sub(height);
-        lines.into_iter().skip(skip).collect()
     }
 
     /// 欢迎框（沿用当前帧，冻结进滚动区时也是这一帧）。
@@ -1019,10 +1057,7 @@ impl App {
         ])
         .split(area);
 
-        frame.render_widget(
-            Paragraph::new(self.activity_lines(rows[0].height as usize)),
-            rows[0],
-        );
+        frame.render_widget(self.history_view(rows[0].height as usize), rows[0]);
         frame.render_widget(Paragraph::new(self.input_line()), rows[1]);
         frame.render_widget(Paragraph::new(self.status_line()), rows[2]);
 
@@ -1340,21 +1375,6 @@ async fn run_command(
     }
 }
 
-/// 把已经冻结的行写进终端滚动区：之后由终端自己滚动，不再占活动区。
-fn flush_scrollback(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-) -> io::Result<()> {
-    let pending = app.take_pending();
-    if pending.is_empty() {
-        return Ok(());
-    }
-    let height = pending.len() as u16;
-    terminal.insert_before(height, |buffer| {
-        Paragraph::new(pending).render(buffer.area, buffer);
-    })
-}
-
 /// 主目录用 `~` 缩写，状态栏不至于太长。
 fn shorten_home(cwd: &str) -> String {
     match dirs::home_dir() {
@@ -1404,36 +1424,25 @@ pub async fn run(
     if cfg.ui.mouse {
         let _ = execute!(io::stdout(), crossterm::event::EnableMouseCapture);
     }
-    let mut terminal = Terminal::with_options(
-        CrosstermBackend::new(io::stdout()),
-        TerminalOptions {
-            viewport: Viewport::Inline(MIN_VIEWPORT_HEIGHT),
-        },
-    )
-    .context("初始化行内 TUI 失败")?;
-    let mut viewport_height = MIN_VIEWPORT_HEIGHT;
+    // 全屏 TUI：进备用屏幕，历史全部留在应用内滚动
+    // （不再用行内视口 + insert_before——那套要算视口行号、还要读 CPR，终端稍一不给面子就串字）
+    execute!(io::stdout(), EnterAlternateScreen).context("进入备用屏幕失败")?;
+    let mut terminal =
+        Terminal::new(CrosstermBackend::new(io::stdout())).context("初始化全屏 TUI 失败")?;
     let mut ticker = tokio::time::interval(TICK);
 
     loop {
         // 每次重绘前：更新宽度、按内容调整活动区高度、把冻结内容写进滚动区
-        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (cols, _rows) = crossterm::terminal::size().unwrap_or((80, 24));
         app.set_width(cols);
-        let desired = app.desired_height(rows);
-        if desired != viewport_height {
-            viewport_height = desired;
-            terminal = Terminal::with_options(
-                CrosstermBackend::new(io::stdout()),
-                TerminalOptions {
-                    viewport: Viewport::Inline(desired),
-                },
-            )?;
-        }
-        flush_scrollback(&mut terminal, &mut app)?;
         terminal.draw(|frame| app.draw(frame))?;
         let prompt = loop {
             // 按键在本线程处理（与 CPR 查询同一个线程，避免两个读取者）
             let mut decided: Option<Option<String>> = None;
             while let Some(event) = poll_event() {
+                if app.scroll_event(&event) {
+                    continue;
+                }
                 match app.on_key(event) {
                     Action::Submit(text) => {
                         decided = Some(Some(text));
@@ -1462,11 +1471,11 @@ pub async fn run(
                 Some(hint) = hint_rx.recv() => app.set_hint(hint),
                 _ = ticker.tick() => app.tick(),
             }
-            flush_scrollback(&mut terminal, &mut app)?;
             terminal.draw(|frame| app.draw(frame))?;
         };
         let Some(prompt) = prompt else {
             terminal.show_cursor()?;
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
             return Ok(());
         };
 
@@ -1480,19 +1489,22 @@ pub async fn run(
         let mut turn = std::pin::pin!(agent.run_turn(prompt, tx, cancel.clone()));
         loop {
             while let Some(event) = poll_event() {
+                if app.scroll_event(&event) {
+                    continue;
+                }
                 match app.on_key(event) {
                     Action::Cancel | Action::Quit => {
                         if app.running {
                             cancel.cancel();
                         } else {
                             terminal.show_cursor()?;
+                            let _ = execute!(io::stdout(), LeaveAlternateScreen);
                             return Ok(());
                         }
                     }
                     _ => {}
                 }
             }
-            flush_scrollback(&mut terminal, &mut app)?;
             terminal.draw(|frame| app.draw(frame))?;
             tokio::select! {
                 result = &mut turn => {
@@ -1843,17 +1855,17 @@ mod tests {
     }
 
     #[test]
-    fn welcome_box_shows_first_then_freezes_into_the_scrollback() {
+    fn welcome_box_shows_first_then_freezes_into_the_history() {
         let mut app = new_app();
-        // 还没发消息：活动区显示欢迎框
-        let lines = app.activity_lines(12);
+        // 还没发消息：历史区顶部显示欢迎框
+        let lines = app.history_lines();
         let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
         let joined = text.join("\n");
         assert!(joined.contains("Seanbot v"), "欢迎框应当显示：{joined}");
         assert!(joined.contains("deepseek-flash"), "{joined}");
         assert!(app.take_pending().is_empty(), "还没发消息时不该有滚动内容");
 
-        // 发出第一条消息：欢迎框定格进滚动区，活动区不再显示它
+        // 发出第一条消息：欢迎框定格进历史，首屏不再单独显示它
         app.turn_started("你好");
         let frozen: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
         let frozen_text = frozen.join("\n");
@@ -1862,11 +1874,7 @@ mod tests {
             "欢迎框应当写进滚动区：{frozen_text}"
         );
         assert!(frozen_text.contains("› 你好"), "{frozen_text}");
-        let after: Vec<String> = app
-            .activity_lines(12)
-            .iter()
-            .map(|l| l.to_string())
-            .collect();
+        let after: Vec<String> = app.history_lines().iter().map(|l| l.to_string()).collect();
         assert!(
             !after.join("\n").contains("Seanbot v"),
             "发出消息后活动区不该再显示欢迎框：{after:?}"
@@ -1896,14 +1904,29 @@ mod tests {
     }
 
     #[test]
-    fn welcome_box_occupies_the_activity_area_height() {
+    fn scroll_keys_move_the_history_window() {
         let mut app = new_app();
-        assert_eq!(app.desired_height(40), 10, "欢迎框 8 行 + 输入行 + 状态栏");
         app.turn_started("你好");
-        assert_eq!(
-            app.desired_height(40),
-            4,
-            "发消息后只留 1 行活动区（不再用 max(3) 硬撑）"
+        for i in 0..30 {
+            app.push_line(format!("第 {i} 行"));
+        }
+        assert_eq!(app.scroll, 0, "默认贴底");
+        assert!(app.scroll_event(&press(KeyCode::PageUp)));
+        assert_eq!(app.scroll, 10);
+        assert!(app.scroll_event(&press(KeyCode::PageDown)));
+        assert_eq!(app.scroll, 0);
+        assert!(app.scroll_event(&press(KeyCode::Home)));
+        assert_eq!(app.scroll, u16::MAX, "Home 拉到最早");
+        assert!(app.scroll_event(&press(KeyCode::End)));
+        assert_eq!(app.scroll, 0, "End 回到最新");
+        assert!(
+            !app.scroll_event(&press(KeyCode::Char('a'))),
+            "普通按键不消费"
+        );
+        assert!(
+            app.history_lines().len() >= 30,
+            "历史里有输出：{}",
+            app.history_lines().len()
         );
     }
 
@@ -2215,20 +2238,14 @@ mod tests {
     }
 
     #[test]
-    fn desired_height_follows_the_tail_and_the_terminal() {
+    fn long_history_stays_inside_the_app() {
+        // 全屏模式：所有输出都留在应用内，不会再被写进终端滚动区
         let mut app = new_app();
-        assert_eq!(app.desired_height(40), 10, "欢迎框 8 行 + 输入行 + 状态栏");
         app.turn_started("你好");
-        assert_eq!(
-            app.desired_height(40),
-            4,
-            "没有流式正文时只留 1 行活动区 + 输入行 + 状态栏"
-        );
-        assert_eq!(app.desired_height(8), 4, "小终端下不超过一半高度");
-        app.on_agent_event(AgentEvent::TextDelta(
-            "未闭合的代码块\n```\n一\n二\n".into(),
-        ));
-        let tall = app.desired_height(40);
-        assert!((4..=20).contains(&tall), "高度应当在 4..=20：{tall}");
+        for i in 0..500 {
+            app.push_line(format!("第 {i} 行"));
+        }
+        assert!(app.history_lines().len() >= 500);
+        assert!(app.take_pending().len() >= 500);
     }
 }

@@ -10,7 +10,6 @@ use crossterm::{
         MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{
     Terminal,
@@ -251,7 +250,6 @@ pub async fn show(
     mouse: bool,
 ) -> io::Result<()> {
     let mut out = io::stdout();
-    execute!(out, EnterAlternateScreen)?;
     if mouse {
         let _ = execute!(out, EnableMouseCapture);
     }
@@ -259,8 +257,6 @@ pub async fn show(
     if mouse {
         let _ = execute!(out, DisableMouseCapture);
     }
-    execute!(out, LeaveAlternateScreen)?;
-    terminal.clear()?;
     result
 }
 

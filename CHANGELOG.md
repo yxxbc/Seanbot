@@ -11,6 +11,10 @@ Seanbot 的所有重要变更都会记录在本文件中。
 
 ## [未发布]
 
+### 变更
+
+- **TUI 改成全屏界面（备用屏幕）+ 应用内滚动**：不再用行内视口与 `insert_before`（那套要算视口行号、还要读光标位置查询，终端稍不配合就串字/错位/吞内容）。历史输出留在应用内，PgUp/PgDn/Home/End 与鼠标滚轮翻页，`End` 回到最新；退出时恢复原屏幕
+
 ### 修复
 
 - TUI 的终端输入收敛到**单线程**读取（去掉 crossterm 的 `EventStream`）：此前按键读取线程与行内视口的光标位置查询（CPR）抢同一个终端输入，导致 `The cursor position could not be read within a normal duration` 与随后的错位
