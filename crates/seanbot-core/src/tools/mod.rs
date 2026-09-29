@@ -4,12 +4,14 @@ mod bash;
 mod edit;
 mod read;
 mod search;
+mod web;
 
 pub use bash::BashTool;
 pub(crate) use bash::interpreter_label;
 pub use edit::EditTool;
 pub use read::ReadTool;
 pub use search::SearchTool;
+pub use web::{WebFetchTool, WebSearchTool};
 
 use std::sync::Arc;
 
