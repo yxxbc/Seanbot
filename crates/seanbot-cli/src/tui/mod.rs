@@ -235,10 +235,10 @@ impl ConfirmState {
         options
     }
 
-    /// 确认框需要几行。
+    /// 确认框需要几行：预览 + 空行 + 选项，再加上下边框。
     fn height(&self) -> u16 {
         let preview = self.ask.as_ref().map(|ask| ask.preview.len()).unwrap_or(0) as u16;
-        preview + self.options().len() as u16 + 2
+        preview + self.options().len() as u16 + 4
     }
 }
 
@@ -1674,6 +1674,131 @@ mod tests {
             },
             rx,
         )
+    }
+
+    /// 用 TestBackend 画一帧，返回整屏文本（测试画面用）。
+    fn drawn(app: &mut App, width: u16, height: u16) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer.cell((x, y)).map(|cell| cell.symbol()).unwrap_or(" "));
+            }
+            text.push('\n');
+        }
+        text
+    }
+
+    /// 去掉所有空白，便于对 CJK 宽字符做断言。
+    fn compact(text: &str) -> String {
+        text.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    #[test]
+    fn welcome_screen_has_the_mascot_box_and_metadata() {
+        let mut app = new_app();
+        let screen = drawn(&mut app, 72, 12);
+        let text = compact(&screen);
+        assert!(text.contains("┌"), "欢迎框要有左边框：{screen}");
+        assert!(text.contains("┘"), "欢迎框要有右下角：{screen}");
+        assert!(text.contains("Seanbotv"), "紧凑断言里没有空格：{screen}");
+        assert!(text.contains("deepseek-flash"), "{screen}");
+        assert!(text.contains("确认模式"), "{screen}");
+        assert!(text.contains("ctrl+o"), "{screen}");
+        // 环环的半块像素画在欢迎框里
+        assert!(
+            text.contains('\u{2580}') || text.contains('\u{2584}'),
+            "欢迎框里应当有环环：{screen}"
+        );
+    }
+
+    #[test]
+    fn slash_popup_screen_lists_commands_and_marks_the_selection() {
+        let mut app = new_app();
+        for c in "/mo".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        let screen = drawn(&mut app, 72, 14);
+        let text = compact(&screen);
+        assert!(text.contains("/model"), "{screen}");
+        assert!(text.contains("/mouse"), "{screen}");
+        assert!(text.contains("▸/model"), "选中项要有标记：{screen}");
+        assert!(text.contains("切换模型"), "要显示说明：{screen}");
+    }
+
+    #[test]
+    fn confirm_screen_shows_preview_and_three_choices() {
+        let mut app = new_app();
+        let (ask, _rx) = bash_ask(true);
+        app.open_confirm(ask, Arc::new(Mutex::new(Rules::default())));
+        let screen = drawn(&mut app, 72, 16);
+        let text = compact(&screen);
+        assert!(text.contains("需要确认"), "要有标题：{screen}");
+        assert!(text.contains("$cargotest"), "要显示命令预览：{screen}");
+        assert!(text.contains("1.允许"), "{screen}");
+        assert!(text.contains("2.允许，本会话不再询问"), "{screen}");
+        assert!(text.contains("3.拒绝，并告诉环环原因"), "{screen}");
+    }
+
+    #[test]
+    fn confirm_screen_hides_the_remember_option_outside_the_project() {
+        let mut app = new_app();
+        let (ask, _rx) = bash_ask(false);
+        app.open_confirm(ask, Arc::new(Mutex::new(Rules::default())));
+        let screen = compact(&drawn(&mut app, 72, 16));
+        assert!(screen.contains("1.允许"), "{screen}");
+        assert!(
+            !screen.contains("本会话不再询问"),
+            "不该提供记住选项：{screen}"
+        );
+    }
+
+    #[test]
+    fn status_bar_reflects_the_permission_mode() {
+        let mut app = new_app();
+        let confirm = compact(&drawn(&mut app, 72, 12));
+        assert!(confirm.contains("确认模式"), "{confirm}");
+        app.set_mode(seanbot_core::PermissionMode::Yolo);
+        let yolo = compact(&drawn(&mut app, 72, 12));
+        assert!(yolo.contains("YOLO"), "{yolo}");
+        assert!(!yolo.contains("确认模式"), "{yolo}");
+    }
+
+    #[test]
+    fn key_sequence_drives_the_state_machine() {
+        let mut app = new_app();
+        // 输入 /mo → 浮窗；↓ 选中 /mouse；Tab 补全；Esc 关窗
+        for c in "/mo".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        assert!(app.popup.is_some());
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Tab));
+        assert_eq!(app.input.text(), "/mouse");
+        app.on_key(press(KeyCode::Esc));
+        assert!(app.popup.is_none());
+
+        // Ctrl+U 清空 → 输入问题 → Enter 提交
+        app.on_key(ctrl('u'));
+        assert!(app.input.is_empty());
+        for c in "你好".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            app.on_key(press(KeyCode::Enter)),
+            Action::Submit("你好".into())
+        );
+        assert!(app.popup.is_none());
+
+        // Ctrl+O 开转录
+        assert_eq!(app.on_key(ctrl('o')), Action::OpenTranscript);
+        // 空闲态 Ctrl+C 两次退出
+        assert_eq!(app.on_key(ctrl('c')), Action::None);
+        assert_eq!(app.on_key(ctrl('c')), Action::Quit);
     }
 
     #[test]

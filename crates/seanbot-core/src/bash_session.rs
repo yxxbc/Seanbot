@@ -1,11 +1,16 @@
 //! bash 常驻会话：可以开多个命名会话，程序退出时必须全部清理——**绝不留孤儿进程**。
 //!
-//! 清理的四层保证：
+//! 清理的六层保证：
 //! 1. **显式**：CLI 的每条退出路径都会调 `shutdown()`；工具 `bash_session close_all` 也能关
 //! 2. **Drop**：`BashSessions` 被丢弃时逐个结束进程组（正常返回、报错返回、panic 展开都会走到）
 //! 3. **EOF 兜底**：子 shell 的 stdin 是我们持有的管道；父进程无论怎么消失（包括被 SIGKILL），
-//!    管道写端都会关闭，shell 读到 EOF 自行退出
+//!    管道写端都会关闭，shell 读到 EOF 自行退出（它自己启动的后台作业不吃 EOF，所以只算兜底）
 //! 4. **进程组**：每个会话独占一个进程组，关闭时 `killpg(SIGKILL)`，连同它启动的后台子进程一起收掉
+//! 5. **退出钩子**：会话会登记到一个进程级名单，`libc::atexit` 里再收一遍——
+//!    `std::process::exit()` 跳过 Drop，但会跑退出钩子，"程序自己退出"的路不靠子 shell 自觉
+//! 6. **看门狗**：父进程被硬杀（SIGKILL）时退出钩子也跑不到，会话 shell 就自己盯着父进程，
+//!    发现它没了立刻 `kill -KILL 0` 端掉整个进程组（连同看门狗自己）
+
 //!
 //! 注意第 3 层管不到"会话里跑起来的、已经脱离进程组的孙进程"（例如自己 setsid 的守护进程）；
 //! 第 4 层能收掉留在同一进程组里的后台任务。测试脚本 scripts/tests/bash_session_test.sh 专门验证这些。
@@ -284,6 +289,8 @@ impl Session {
             .write(&kind.warmup())
             .await
             .map_err(|e| SessionError::Spawn(e.to_string()))?;
+        // 会话跑起来了才登记：`std::process::exit()` 之类跳过 Drop 的退出路径也收得掉它
+        exit_guard::register(session.pid, &session.token);
         Ok(session)
     }
 
@@ -432,6 +439,8 @@ impl Session {
         kill_escaped(&self.token);
         let _ = self.child.start_kill();
         let _ = self.child.try_wait();
+        // 已经收干净了：从退出钩子的名单里划掉，免得多收一遍（也免得 pid 被复用后误伤）
+        exit_guard::unregister(&self.token);
         // 关掉写端：即使 kill 没送到，shell 也会读到 EOF 自行退出
         self.stdin = None;
     }
@@ -490,8 +499,13 @@ impl ShellKind {
                 //    - kill 0 收掉整个进程组
                 //    这样即使父进程被 SIGKILL、Rust 端清理代码没机会跑，
                 //    会话里的进程（含后台任务与逃逸进程）也会被 shell 自己收走。
+                // 3) 看门狗：父进程被硬杀时上面两层都赶不上——Rust 端连退出钩子都跑不到，
+                //    会话 shell 启动的后台作业又不吃 EOF；所以让一个后台子 shell 盯着
+                //    父进程与自己的存活，谁没了就 kill -KILL 0 把整组端掉（含它自己）。
                 concat!(
                     "exec 2>&1\n",
+                    // 父进程（Seanbot）的 pid：看门狗与 EXIT 清理都靠它判断"外面还在不在"
+                    "__sb_parent=$PPID\n",
                     // 按 ppid 树收掉子孙进程：macOS 读不到别的进程的环境变量（内核限制），
                     // 这是找到「自己 setsid 逃逸」进程的唯一办法；必须在 kill 0 之前跑，
                     // 那时逃逸进程还挂在会话 shell 下面。
@@ -522,6 +536,9 @@ impl ShellKind {
                     "  fi\n",
                     "}\n",
                     "trap '__sb_kill_descendants; __sb_kill_escaped; kill 0; exit 0' EXIT\n",
+                    // 看门狗：`$$` 在子 shell 里仍是会话 shell 的 pid；两者都还在就继续等，
+                    // 任一消失（父进程被硬杀 / 会话 shell 被外部杀掉）就端掉整组——SIGKILL 不可忽略
+                    "( while kill -0 \"$$\" 2>/dev/null && kill -0 \"$__sb_parent\" 2>/dev/null; do sleep 1; done; kill -KILL 0 ) >/dev/null 2>&1 &\n",
                 )
                 .to_string()
             }
