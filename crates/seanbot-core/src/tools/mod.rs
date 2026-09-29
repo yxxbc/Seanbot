@@ -17,19 +17,46 @@ pub use web::{WebFetchTool, WebSearchTool};
 
 use std::sync::Arc;
 
-use crate::{registry::ToolRegistry, tool::Tool};
+use crate::{config::Config, registry::ToolRegistry, tool::Tool};
 
 /// 内置工具登记表。内置工具最先注册，名称随之锁定。
-pub fn builtin_registry() -> ToolRegistry {
+pub fn builtin_registry(config: &Config) -> ToolRegistry {
+    let web = crate::web::backend_from_config(config);
     let mut registry = ToolRegistry::default();
-    let tools: [Arc<dyn Tool>; 4] = [
+    let tools: [Arc<dyn Tool>; 7] = [
         Arc::new(BashTool),
         Arc::new(EditTool),
+        Arc::new(PerceiveTool),
         Arc::new(ReadTool),
         Arc::new(SearchTool),
+        Arc::new(WebFetchTool::new(web.clone())),
+        Arc::new(WebSearchTool::new(web)),
     ];
     for tool in tools {
         registry.register(tool).expect("内置工具名不应冲突");
     }
     registry
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+
+    #[test]
+    fn registry_contains_all_builtin_tools_in_order() {
+        let names = builtin_registry(&Config::default()).names();
+        assert_eq!(
+            names,
+            [
+                "bash",
+                "edit",
+                "perceive",
+                "read",
+                "search",
+                "web_fetch",
+                "web_search"
+            ]
+        );
+    }
 }

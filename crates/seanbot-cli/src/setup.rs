@@ -63,7 +63,7 @@ pub fn build_agent(
     Ok(Agent::new(
         provider,
         model,
-        builtin_registry(),
+        builtin_registry(cfg),
         Arc::new(cfg.clone()),
         Arc::new(AllowAll),
         cwd,

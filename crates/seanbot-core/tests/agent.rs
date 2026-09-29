@@ -130,7 +130,7 @@ fn harness_with(steps: Vec<Step>, permission: Arc<dyn PermissionHandler>) -> Har
     let agent = Agent::new(
         provider.clone(),
         "fake-model",
-        builtin_registry(),
+        builtin_registry(&Config::default()),
         Arc::new(Config::default()),
         permission,
         dir.path().to_path_buf(),
@@ -417,7 +417,18 @@ async fn request_prefix_is_stable_across_steps_and_turns() {
         assert!(w[1].messages.starts_with(&w[0].messages), "历史必须只追加");
     }
     let names: Vec<_> = reqs[0].tools.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(names, ["bash", "edit", "read", "search"]);
+    assert_eq!(
+        names,
+        [
+            "bash",
+            "edit",
+            "perceive",
+            "read",
+            "search",
+            "web_fetch",
+            "web_search"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -622,7 +633,7 @@ async fn resumed_agent_sends_identical_prefix() {
     let mut resumed = Agent::new(
         provider.clone(),
         "fake-model",
-        builtin_registry(),
+        builtin_registry(&Config::default()),
         Arc::new(Config::default()),
         Arc::new(AllowAll),
         first.dir.path().to_path_buf(),
