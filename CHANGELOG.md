@@ -16,7 +16,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 ### 新增
 
 - 输入框换成多行编辑（tui-textarea）：↑↓ 在输入框内按行移动（已在首/末行时才翻历史）、←→ / Home / End / Backspace / Delete、Ctrl+A / Ctrl+E、多行粘贴；bracketed paste 整段插入且**不会误触发提交**（回归测试覆盖）。输入框高度随内容增长，活动区相应收缩
-- TUI 的界面层拆成独立模块：输入框逻辑（`tui/input.rs`）、浮窗/二级列表/确认框状态与渲染行（`tui/popup.rs`）、绘制层（`tui/render.rs`）各自成文件，`tui/mod.rs` 只留主循环与 `App` 状态；行内界面与终端守卫早在 `tui/{inline,terminal}.rs`. 每个模块都带自己的单元测试（输入框的粘贴/多行高度/光标列换算、浮窗的选项与高亮、`PendingAsks` 的授权配对等）
+- TUI 的界面层拆成独立模块：输入框逻辑在 `tui/input.rs`，浮窗 / 二级列表 / 确认框的状态与渲染行在 `tui/popup.rs`，绘制层在 `tui/render.rs`，`tui/mod.rs` 只留主循环与 `App` 状态（行内视口与终端守卫此前已在 `tui/{inline,terminal}.rs`）。每个模块都带自己的单元测试：输入框的粘贴与多行高度、光标列的显示宽度换算、浮窗的选项与高亮、`PendingAsks` 的授权配对等
 
 - **TUI 改回真正的行内界面（Inline TUI）**：用 ratatui 的 `Viewport::Inline` + `insert_before` + `scrolling-regions`，完成输出冻结进**终端原生 scrollback**（可以直接用终端自己的滚动条/滚轮回看历史），正在流式的正文留在活动区继续重绘。不再占用备用屏幕，退出后历史留在终端里
 - 终端生命周期抽成独立模块（`tui/terminal.rs`）：raw mode / bracketed paste / 鼠标捕获、panic 钩子、退出还原，非 TTY 时自动退回备用屏幕；还原序列有独立单测（没有 TTY 也能断言转义码）
