@@ -3,7 +3,7 @@
 use std::{
     collections::HashMap,
     io,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::SystemTime,
 };
@@ -137,6 +137,55 @@ pub fn resolve_path(cwd: &Path, raw: &str) -> PathBuf {
     }
 }
 
+/// 判断 `path` 是否位于 `cwd` 之内：按真实路径判断（解析符号链接与 `..`），
+/// 目标不存在时规范化其最近的已存在祖先再拼接剩余部分。
+pub fn is_within(cwd: &Path, path: &Path) -> bool {
+    let base = std::fs::canonicalize(cwd).unwrap_or_else(|_| lexical_normalize(cwd));
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    normalize_existing(&joined).starts_with(&base)
+}
+
+fn normalize_existing(path: &Path) -> PathBuf {
+    let lexical = lexical_normalize(path);
+    let mut existing = lexical.clone();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = std::fs::canonicalize(&existing) {
+            let mut out = real;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return out;
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => return lexical,
+        }
+    }
+}
+
+/// 只做词法处理：去掉 `.`，把 `..` 与前一段抵消。
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     args.get(key)
         .and_then(Value::as_str)
@@ -235,5 +284,28 @@ mod tests {
     fn binary_detection() {
         assert!(is_binary(b"ab\0cd"));
         assert!(!is_binary("你好".as_bytes()));
+    }
+
+    #[test]
+    fn is_within_checks_real_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "x").unwrap();
+        let cwd = dir.path();
+        assert!(is_within(cwd, Path::new("a.txt")));
+        assert!(is_within(cwd, Path::new("new/dir/x.txt")));
+        assert!(is_within(cwd, &dir.path().join("a.txt")));
+        assert!(!is_within(cwd, Path::new("../x.txt")));
+        assert!(!is_within(cwd, Path::new("sub/../../x.txt")));
+        assert!(!is_within(cwd, &other.path().join("y.txt")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn is_within_follows_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(other.path(), dir.path().join("link")).unwrap();
+        assert!(!is_within(dir.path(), Path::new("link/f.txt")));
     }
 }

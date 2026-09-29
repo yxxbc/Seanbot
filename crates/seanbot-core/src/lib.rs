@@ -20,6 +20,7 @@ pub use prompt::{PromptEnv, system_prompt};
 pub use registry::{RegistryError, ToolRegistry};
 pub use runtime::{PermissionMode, RuntimeState, SharedRuntime, shared_runtime};
 pub use tool::{
-    ReadTracker, Risk, Tool, ToolContext, ToolError, ToolOutput, ToolSource, resolve_path,
+    ReadTracker, Risk, Tool, ToolContext, ToolError, ToolOutput, ToolSource, is_within,
+    resolve_path,
 };
 pub use tools::builtin_registry;
