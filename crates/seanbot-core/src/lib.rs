@@ -3,6 +3,7 @@
 pub mod config;
 pub mod tools;
 
+mod agent;
 mod denylist;
 mod event;
 mod permission;
@@ -10,6 +11,7 @@ mod prompt;
 mod registry;
 mod tool;
 
+pub use agent::{Agent, AgentError, DEFAULT_MAX_STEPS};
 pub use denylist::Denylist;
 pub use event::{AgentEvent, TurnSummary};
 pub use permission::{AllowAll, Decision, PermissionHandler, PermissionRequest};
