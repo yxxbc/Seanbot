@@ -6,7 +6,7 @@
 //! - `-p` 重定向到文件时不要用这里：调用方直接输出原始 Markdown。
 //! - 渲染 panic 一律退回原始文本（`catch_unwind` 兜底），不让界面因为一段 Markdown 崩掉。
 
-// TODO(阶段 2a/2c)：TUI 与 -p 接线后删掉这个 allow（现在模块还没被调用）
+// TODO(阶段 2c)：render_lines 供 TUI 回放、render_ansi 供非流式输出，接线后删掉这个 allow
 #![allow(dead_code)]
 
 use std::fmt::Write as _;
@@ -41,6 +41,12 @@ pub struct Streaming {
     /// 已经交出去（写进滚动区）的行数
     frozen: usize,
 }
+
+// SAFETY: 内部的 syntect/onig 数据带裸指针，所以标准库不敢自动判定 Send。
+// 实际上这个渲染器**只由持有它的线程使用**（CLI 的渲染循环，以后的 TUI 主线程），
+// 从不跨线程共享；它引用的 default_syntect() 是 &'static 只读数据。
+// 手动标记 Send 只是为了满足 Renderer<W>: Send 的约束。
+unsafe impl Send for Streaming {}
 
 impl Streaming {
     /// `width` 为终端宽度，用于限制表格宽度。

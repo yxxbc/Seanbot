@@ -72,6 +72,8 @@ pub struct Renderer<W: Write> {
     labels: HashMap<String, String>,
     /// 终端被外部接管（如权限确认）时暂停动画
     paused: bool,
+    /// 本轮 Markdown 流式渲染器；仅在终端（`style.color`）时启用，重定向时保持原始 Markdown
+    markdown: Option<crate::markdown::Streaming>,
 }
 
 impl<W: Write> Renderer<W> {
@@ -89,6 +91,7 @@ impl<W: Write> Renderer<W> {
             at_line_start: true,
             labels: HashMap::new(),
             paused: false,
+            markdown: None,
         }
     }
 
@@ -139,7 +142,23 @@ impl<W: Write> Renderer<W> {
             }
             AgentEvent::TextDelta(text) => {
                 self.end_thinking()?;
-                self.write_raw(&text, &text)?;
+                if self.style.color {
+                    // 终端里流式渲染 Markdown：冻结的行立刻写出，其余留给活动区域
+                    if self.markdown.is_none() {
+                        let width = self.cols();
+                        self.markdown = Some(crate::markdown::Streaming::new(width));
+                    }
+                    let lines = match self.markdown.as_mut() {
+                        Some(stream) => stream.push(&text),
+                        None => Vec::new(),
+                    };
+                    if !lines.is_empty() {
+                        let ansi = crate::markdown::lines_to_ansi(&lines);
+                        self.write_ansi(&ansi)?;
+                    }
+                } else {
+                    self.write_raw(&text, &text)?;
+                }
             }
             AgentEvent::ToolStarted {
                 call_id,
@@ -147,6 +166,7 @@ impl<W: Write> Renderer<W> {
                 title,
             } => {
                 self.end_thinking()?;
+                self.flush_markdown()?;
                 self.ensure_newline()?;
                 let label = format::tool_label(&name, &title);
                 if self.style.animate {
@@ -236,8 +256,45 @@ impl<W: Write> Renderer<W> {
     }
 
     fn finish_line(&mut self) -> io::Result<()> {
+        self.flush_markdown()?;
         self.stop_spinner()?;
         self.ensure_newline()
+    }
+
+    /// 终端宽度（Markdown 表格折行用）。
+    fn cols(&self) -> usize {
+        self.style
+            .cols
+            .map(usize::from)
+            .or_else(|| {
+                crossterm::terminal::size()
+                    .ok()
+                    .map(|(cols, _)| cols as usize)
+            })
+            .unwrap_or(80)
+    }
+
+    /// 结束本轮 Markdown 流式渲染，把还没写出的行写掉。
+    fn flush_markdown(&mut self) -> io::Result<()> {
+        let Some(mut stream) = self.markdown.take() else {
+            return Ok(());
+        };
+        let lines = stream.finish();
+        if !lines.is_empty() {
+            let ansi = crate::markdown::lines_to_ansi(&lines);
+            self.write_ansi(&ansi)?;
+        }
+        Ok(())
+    }
+
+    /// 直接写已经带转义序列的内容（不再套样式）。
+    fn write_ansi(&mut self, text: &str) -> io::Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
+        self.out.write_all(text.as_bytes())?;
+        self.at_line_start = text.ends_with('\n');
+        Ok(())
     }
 
     fn write_preview(&mut self, body: &[String]) -> io::Result<()> {
@@ -381,6 +438,41 @@ pub async fn drive<W: Write + Send>(
 mod tests {
     use super::*;
     use seanbot_provider::Usage;
+
+    /// 终端（color=true）时正文走 Markdown 渲染；重定向时保持原始 Markdown。
+    #[test]
+    fn terminal_renders_markdown_and_redirect_stays_raw() {
+        let t0 = Instant::now();
+        let make = |color: bool| {
+            let style = RenderStyle {
+                animate: false,
+                color,
+                show_reasoning: false,
+                cols: Some(80),
+            };
+            Renderer::new(Vec::new(), style, Box::new(move || t0))
+        };
+
+        let mut fancy = make(true);
+        fancy.handle(AgentEvent::ThinkingStarted).unwrap();
+        fancy
+            .handle(AgentEvent::TextDelta("- 一\n- 二\n".into()))
+            .unwrap();
+        fancy.handle(AgentEvent::Cancelled).unwrap();
+        let out = String::from_utf8(fancy.into_inner()).unwrap();
+        assert!(out.contains("• 一"), "终端里应当渲染出列表：{out:?}");
+        assert!(!out.contains("- 一"), "列表标记不该原样出现：{out:?}");
+
+        let mut plain = make(false);
+        plain.handle(AgentEvent::ThinkingStarted).unwrap();
+        plain
+            .handle(AgentEvent::TextDelta("- 一\n".into()))
+            .unwrap();
+        plain.handle(AgentEvent::Cancelled).unwrap();
+        let out = String::from_utf8(plain.into_inner()).unwrap();
+        assert!(out.contains("- 一"), "重定向时应当原样输出：{out:?}");
+        assert!(!out.contains("• 一"), "重定向时不该渲染：{out:?}");
+    }
 
     fn render(events: Vec<AgentEvent>, show_reasoning: bool) -> String {
         let t0 = Instant::now();
