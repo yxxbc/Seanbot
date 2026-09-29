@@ -19,3 +19,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
   - `kb/AboutSeanbot/01-Seanbot.md`：Seanbot 自我介绍（能力、用法、作者信息）
   - `kb/SeanbotTools/01-KernelTool.md`：内核基础工具（`bash`、`read`、`edit`、`search`）参数与行为说明
 - 品牌资源：`pics/Seanbot-icon.svg`、`pics/Seanbot-app-icon.svg`
+- 终端 agent `sean`：与 DeepSeek 多轮对话；`sean config` 配置向导、`sean models` 列出模型、`sean -p` 单次问答、`--model` 临时切换模型
+- 内置工具 `read`、`edit`、`bash`、`search`；工具执行时显示转圈、计时与折叠预览
+- bash 命令黑名单，可在 `~/.seanbot/config.toml` 的 `[tools.bash] deny` 中调整
+- 每轮结束显示 token 用量与上下文缓存命中量；执行中按 Ctrl+C 可中断当前任务并继续对话
