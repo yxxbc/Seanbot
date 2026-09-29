@@ -2,6 +2,7 @@
 
 mod bash;
 mod edit;
+mod perceive;
 mod read;
 mod search;
 mod web;
@@ -9,6 +10,7 @@ mod web;
 pub use bash::BashTool;
 pub(crate) use bash::interpreter_label;
 pub use edit::EditTool;
+pub use perceive::PerceiveTool;
 pub use read::ReadTool;
 pub use search::SearchTool;
 pub use web::{WebFetchTool, WebSearchTool};
