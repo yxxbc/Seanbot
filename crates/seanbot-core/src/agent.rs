@@ -174,6 +174,11 @@ impl Agent {
         &self.system
     }
 
+    /// 换一个权限处理器（TUI 起手时把逐行确认换成界面确认）。
+    pub fn set_permission(&mut self, permission: Arc<dyn PermissionHandler>) {
+        self.permission = permission;
+    }
+
     /// 关闭所有常驻 bash 会话。退出前显式调用一次，Drop 里还有兜底。
     pub fn shutdown(&self) {
         self.bash_sessions.shutdown();

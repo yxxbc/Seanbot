@@ -215,7 +215,16 @@ async fn converse(cli: Cli) -> anyhow::Result<ExitCode> {
                 )
                 .await?;
             } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-                tui::run(&mut agent, &cfg, &journal, hint_rx).await?;
+                // TUI：确认请求交给界面（把逐行确认框换成 TuiPermission）
+                let (perm_tx, perm_rx) = tokio::sync::mpsc::unbounded_channel();
+                let rules = std::sync::Arc::new(std::sync::Mutex::new(tui::Rules::default()));
+                agent.set_permission(std::sync::Arc::new(tui::TuiPermission::new(
+                    agent.runtime(),
+                    perm_tx,
+                    rules.clone(),
+                    cwd.clone(),
+                )));
+                tui::run(&mut agent, &cfg, &journal, hint_rx, perm_rx, rules).await?;
             } else {
                 anyhow::bail!(
                     "当前输出不是终端，无法启动交互界面；请用 `sean -p \"问题\"` 单轮提问"

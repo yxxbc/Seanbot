@@ -10,7 +10,10 @@
 //! 伪终端在当前开发沙箱里不可用（openpty 被拒），所以界面靠 ratatui TestBackend 断言
 //! （活动区/输入行/状态栏/光标），入口与按键逻辑用单元测试覆盖。
 
+mod permission;
 mod slash;
+
+pub use permission::{Ask, Rules, TuiPermission};
 
 use std::{
     io::{self, Write},
@@ -34,9 +37,9 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph, Widget},
+    widgets::{Block, Borders, Clear, Paragraph, Widget},
 };
-use seanbot_core::{Agent, AgentEvent, config::Config};
+use seanbot_core::{Agent, AgentEvent, Decision, config::Config};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use unicode_width::UnicodeWidthStr;
@@ -196,6 +199,34 @@ impl Input {
 }
 
 /// 界面状态。
+/// 确认框状态（设计书 §4.8）。
+struct ConfirmState {
+    /// 待回传的请求；拿走它就等于关闭确认框
+    ask: Option<Ask>,
+    selected: usize,
+    /// 正在输入拒绝原因（None 表示还在选选项）
+    reason: Option<Input>,
+    rules: Arc<Mutex<Rules>>,
+}
+
+impl ConfirmState {
+    /// 可用选项；改动工作目录之外的 edit 不提供"本会话不再询问"。
+    fn options(&self) -> Vec<&'static str> {
+        let mut options = vec!["允许"];
+        if self.ask.as_ref().is_some_and(|ask| ask.rememberable) {
+            options.push("允许，本会话不再询问");
+        }
+        options.push("拒绝，并告诉环环原因");
+        options
+    }
+
+    /// 确认框需要几行。
+    fn height(&self) -> u16 {
+        let preview = self.ask.as_ref().map(|ask| ask.preview.len()).unwrap_or(0) as u16;
+        preview + self.options().len() as u16 + 2
+    }
+}
+
 /// 二级列表选出来的东西要干什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickKind {
@@ -234,6 +265,8 @@ pub struct App {
     popup: Option<Popup>,
     /// 二级列表（/model、/resume）
     picker: Option<Picker>,
+    /// 工具确认框
+    confirm: Option<ConfirmState>,
     /// 当前工作目录（状态栏显示用）
     cwd: String,
     /// 待写进终端滚动区的行（写出去就从内存里丢掉）
@@ -263,6 +296,7 @@ impl App {
             input: Input::default(),
             popup: None,
             picker: None,
+            confirm: None,
             cwd: cwd.to_string(),
             pending: Vec::new(),
             markdown: None,
@@ -298,6 +332,10 @@ impl App {
         // Windows 上会有 Release/Repeat，只认按下
         if key.kind != KeyEventKind::Press {
             return Action::None;
+        }
+        // 确认框最优先：它挡着内核的一次授权等待
+        if self.confirm.is_some() {
+            return self.on_confirm_key(key);
         }
         // 二级列表打开时，它优先吃按键
         if self.picker.is_some() {
@@ -504,6 +542,8 @@ impl App {
 
     pub fn turn_finished(&mut self) {
         self.flush_markdown();
+        // 本轮结束/被取消：确认框随之关掉，内核那边会拿到"拒绝"
+        self.confirm = None;
         self.running = false;
     }
 
@@ -546,7 +586,8 @@ impl App {
             .as_ref()
             .map(|picker| picker.items.len() as u16 + 1)
             .unwrap_or(0);
-        (body.max(popup).max(picker) + 2)
+        let confirm = self.confirm.as_ref().map(|c| c.height()).unwrap_or(0);
+        (body.max(popup).max(picker).max(confirm) + 2)
             .clamp(4, cap)
             .min(term_height.max(4))
     }
@@ -559,6 +600,133 @@ impl App {
     fn activity_lines(&self, height: usize) -> Vec<Line<'static>> {
         let skip = self.tail.len().saturating_sub(height);
         self.tail.iter().skip(skip).cloned().collect()
+    }
+
+    /// 内核请求授权：打开确认框。
+    pub fn open_confirm(&mut self, ask: Ask, rules: Arc<Mutex<Rules>>) {
+        self.confirm = Some(ConfirmState {
+            ask: Some(ask),
+            selected: 0,
+            reason: None,
+            rules,
+        });
+    }
+
+    /// 确认框按键。
+    fn on_confirm_key(&mut self, key: KeyEvent) -> Action {
+        // 正在写拒绝原因
+        let writing = self
+            .confirm
+            .as_ref()
+            .is_some_and(|confirm| confirm.reason.is_some());
+        if writing {
+            match key.code {
+                KeyCode::Enter => {
+                    let text = self
+                        .confirm
+                        .as_ref()
+                        .and_then(|confirm| confirm.reason.as_ref())
+                        .map(|reason| reason.text().trim().to_string())
+                        .unwrap_or_default();
+                    let reason = if text.is_empty() { None } else { Some(text) };
+                    self.send_decision(Decision::Deny { reason });
+                }
+                KeyCode::Esc => {
+                    if let Some(confirm) = self.confirm.as_mut() {
+                        confirm.reason = None;
+                    }
+                }
+                _ => {
+                    if let Some(reason) = self
+                        .confirm
+                        .as_mut()
+                        .and_then(|confirm| confirm.reason.as_mut())
+                    {
+                        match key.code {
+                            KeyCode::Char(c) => reason.insert(c),
+                            KeyCode::Backspace => reason.backspace(),
+                            KeyCode::Delete => reason.delete(),
+                            KeyCode::Left => reason.left(),
+                            KeyCode::Right => reason.right(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            return Action::None;
+        }
+
+        let options = self
+            .confirm
+            .as_ref()
+            .map(|confirm| confirm.options().len())
+            .unwrap_or(0);
+        if options == 0 {
+            return Action::None;
+        }
+        match key.code {
+            KeyCode::Up => {
+                if let Some(confirm) = self.confirm.as_mut() {
+                    confirm.selected = (confirm.selected + options - 1) % options;
+                }
+            }
+            KeyCode::Down => {
+                if let Some(confirm) = self.confirm.as_mut() {
+                    confirm.selected = (confirm.selected + 1) % options;
+                }
+            }
+            KeyCode::Char(digit @ '1'..='3') => {
+                let index = digit as usize - '1' as usize;
+                if index < options {
+                    if let Some(confirm) = self.confirm.as_mut() {
+                        confirm.selected = index;
+                    }
+                    self.apply_confirm();
+                }
+            }
+            KeyCode::Enter => self.apply_confirm(),
+            KeyCode::Esc => self.send_decision(Decision::Deny { reason: None }),
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// 执行确认框里选中的选项。
+    fn apply_confirm(&mut self) {
+        let Some(confirm) = self.confirm.as_ref() else {
+            return;
+        };
+        let selected = confirm.selected;
+        let last = confirm.options().len() - 1;
+        if selected == last {
+            // 第三项：展开原因输入框
+            if let Some(confirm) = self.confirm.as_mut() {
+                confirm.reason = Some(Input::default());
+            }
+            return;
+        }
+        if selected == 0 {
+            self.send_decision(Decision::AllowOnce);
+            return;
+        }
+        // 第二项：记住规则 + 放行
+        if let Some(confirm) = self.confirm.as_ref()
+            && let Some(ask) = confirm.ask.as_ref()
+            && let Ok(mut rules) = confirm.rules.lock()
+        {
+            rules.remember(&ask.request);
+        }
+        self.send_decision(Decision::AllowSession);
+    }
+
+    /// 把决定回传给等待中的内核（顺带关闭确认框）。
+    fn send_decision(&mut self, decision: Decision) {
+        let Some(mut confirm) = self.confirm.take() else {
+            return;
+        };
+        if let Some(ask) = confirm.ask.take() {
+            let _ = ask.reply.send(decision);
+        }
     }
 
     /// 打开二级列表（没有候选项时直接在滚动区说明）。
@@ -693,6 +861,63 @@ impl App {
         );
         frame.render_widget(Paragraph::new(self.input_line()), rows[1]);
         frame.render_widget(Paragraph::new(self.status_line()), rows[2]);
+
+        // 确认框：金色边框，盖在活动区底部
+        if let Some(confirm) = &self.confirm {
+            let height = confirm.height().min(rows[0].height);
+            if height >= 3 {
+                let area = Rect {
+                    x: rows[0].x,
+                    y: rows[0].bottom().saturating_sub(height),
+                    width: rows[0].width,
+                    height,
+                };
+                let mut lines: Vec<Line<'static>> = confirm
+                    .ask
+                    .as_ref()
+                    .map(|ask| ask.preview.clone())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|text| Line::from(Span::raw(text)))
+                    .collect();
+                lines.push(Line::from(""));
+                match &confirm.reason {
+                    Some(reason) => lines.push(Line::from(vec![
+                        Span::raw("拒绝原因："),
+                        Span::styled(
+                            reason.text().to_string(),
+                            Style::default().fg(Color::Rgb(0xF4, 0xE9, 0xD8)),
+                        ),
+                    ])),
+                    None => {
+                        for (index, option) in confirm.options().iter().enumerate() {
+                            let selected = index == confirm.selected;
+                            let marker = if selected { "▸ " } else { "  " };
+                            let style = if selected {
+                                Style::default()
+                                    .fg(Color::Rgb(0xE6, 0xB8, 0x5C))
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            };
+                            lines.push(Line::from(Span::styled(
+                                format!("{marker}{}. {option}", index + 1),
+                                style,
+                            )));
+                        }
+                    }
+                }
+                let gold = Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C));
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(gold)
+                    .title(" 需要确认 ");
+                let inner = block.inner(area);
+                frame.render_widget(Clear, area);
+                frame.render_widget(block, area);
+                frame.render_widget(Paragraph::new(lines), inner);
+            }
+        }
 
         // 二级列表同样贴在输入行上方，第一行是标题
         if let Some(picker) = &self.picker {
@@ -983,6 +1208,8 @@ pub async fn run(
     cfg: &Config,
     journal: &Arc<Mutex<Journal>>,
     mut hint_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    mut perm_rx: mpsc::UnboundedReceiver<Ask>,
+    rules: Arc<Mutex<Rules>>,
 ) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()
         .unwrap_or_default()
@@ -1079,6 +1306,10 @@ pub async fn run(
                         journal.record(&event);
                     }
                     app.on_agent_event(event);
+                }
+                Some(ask) = perm_rx.recv() => {
+                    // 内核在等这次授权：弹确认框（Esc/中断/本轮结束都会回传拒绝）
+                    app.open_confirm(ask, rules.clone());
                 }
                 maybe = events.next() => {
                     if let Some(Ok(event)) = maybe {
@@ -1278,6 +1509,112 @@ mod tests {
         );
         let cursor = terminal.get_cursor_position().unwrap();
         assert_eq!(cursor.y, 10, "光标应在输入行（倒数第二行）：{cursor:?}");
+    }
+
+    fn bash_ask(rememberable: bool) -> (Ask, tokio::sync::oneshot::Receiver<Decision>) {
+        use seanbot_core::{PermissionRequest, Risk};
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        let request = PermissionRequest {
+            tool: "bash".into(),
+            title: "Bash 想要执行".into(),
+            risk: Risk::Mutating,
+            args: serde_json::json!({"command": "cargo test"}),
+        };
+        (
+            Ask {
+                request,
+                reply,
+                rememberable,
+                preview: vec!["$ cargo test".into()],
+            },
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn confirm_enter_allows_and_esc_denies() {
+        let mut app = new_app();
+        let rules = Arc::new(Mutex::new(Rules::default()));
+
+        let (ask, rx) = bash_ask(true);
+        app.open_confirm(ask, rules.clone());
+        assert!(app.confirm.is_some());
+        app.on_key(press(KeyCode::Enter));
+        assert_eq!(rx.await.unwrap(), Decision::AllowOnce);
+        assert!(app.confirm.is_none(), "回传决定后关掉确认框");
+
+        let (ask, rx) = bash_ask(true);
+        app.open_confirm(ask, rules);
+        app.on_key(press(KeyCode::Esc));
+        assert_eq!(rx.await.unwrap(), Decision::Deny { reason: None });
+    }
+
+    #[tokio::test]
+    async fn confirm_second_option_remembers_the_rule() {
+        let mut app = new_app();
+        let rules = Arc::new(Mutex::new(Rules::default()));
+        let (ask, rx) = bash_ask(true);
+        app.open_confirm(ask, rules.clone());
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Enter));
+        assert_eq!(rx.await.unwrap(), Decision::AllowSession);
+
+        let remembered = {
+            let rules = rules.lock().unwrap();
+            rules.allows(&seanbot_core::PermissionRequest {
+                tool: "bash".into(),
+                title: String::new(),
+                risk: seanbot_core::Risk::Mutating,
+                args: serde_json::json!({"command": "cargo test -p seanbot-core"}),
+            })
+        };
+        assert!(remembered, "应当记住 cargo test 这个前缀");
+    }
+
+    #[tokio::test]
+    async fn confirm_reason_flows_back_to_the_kernel() {
+        let mut app = new_app();
+        let (ask, rx) = bash_ask(true);
+        app.open_confirm(ask, Arc::new(Mutex::new(Rules::default())));
+        // 第三项：拒绝并说原因
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Down));
+        app.on_key(press(KeyCode::Enter));
+        assert!(
+            app.confirm.as_ref().unwrap().reason.is_some(),
+            "应当展开原因输入"
+        );
+        for c in "别动生产".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        app.on_key(press(KeyCode::Enter));
+        assert_eq!(
+            rx.await.unwrap(),
+            Decision::Deny {
+                reason: Some("别动生产".into())
+            }
+        );
+    }
+
+    #[test]
+    fn confirm_without_the_remember_option_has_two_choices() {
+        let mut app = new_app();
+        let (ask, _rx) = bash_ask(false);
+        app.open_confirm(ask, Arc::new(Mutex::new(Rules::default())));
+        let options = app.confirm.as_ref().unwrap().options().to_vec();
+        assert_eq!(options.len(), 2, "{options:?}");
+        assert!(options[1].contains("拒绝"), "{options:?}");
+    }
+
+    #[tokio::test]
+    async fn ending_the_turn_denies_a_pending_confirmation() {
+        let mut app = new_app();
+        let (ask, rx) = bash_ask(true);
+        app.open_confirm(ask, Arc::new(Mutex::new(Rules::default())));
+        app.on_agent_event(AgentEvent::Cancelled);
+        app.turn_finished();
+        assert!(app.confirm.is_none(), "本轮结束应当关掉确认框");
+        assert!(rx.await.is_err(), "发送端被丢弃 → 内核按拒绝处理");
     }
 
     #[test]
