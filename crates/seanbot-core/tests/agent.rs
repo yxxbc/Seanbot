@@ -444,12 +444,19 @@ async fn cancel_before_stream_opens() {
     assert!(res.unwrap().cancelled);
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(events.last(), Some(&AgentEvent::Cancelled));
-    assert_eq!(h.agent.history(), &[Message::user("q")]);
+    // 没有得到任何回应的用户消息被撤回，避免下一轮出现连续两条 user 消息
+    assert!(h.agent.history().is_empty());
     run(&mut h.agent, "再来", CancellationToken::new())
         .await
         .0
         .unwrap();
-    assert_eq!(h.agent.history().last().unwrap().content, "好");
+    assert_eq!(
+        h.agent.history(),
+        &[
+            Message::user("再来"),
+            Message::assistant("好", None, vec![])
+        ]
+    );
 }
 
 #[cfg(unix)]
@@ -483,7 +490,7 @@ async fn auth_error_before_stream() {
         Err(AgentError::Provider(ProviderError::Auth { .. }))
     ));
     assert!(matches!(events.last(), Some(AgentEvent::Error(m)) if m.contains("sean config")));
-    assert_eq!(h.agent.history(), &[Message::user("q")]);
+    assert!(h.agent.history().is_empty());
 }
 
 #[tokio::test]

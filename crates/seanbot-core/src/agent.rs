@@ -150,10 +150,15 @@ impl Agent {
                 usage.get_or_insert_with(Usage::default).add(u);
             }
             let calls = step.calls.clone();
-            if !step.text.is_empty() || !step.reasoning.is_empty() || !calls.is_empty() {
+            let produced = !step.text.is_empty() || !step.reasoning.is_empty() || !calls.is_empty();
+            if produced {
                 let reasoning = (!step.reasoning.is_empty()).then_some(step.reasoning);
                 self.history
                     .push(Message::assistant(step.text, reasoning, step.calls));
+            } else if steps == 1 && (step.cancelled || step.error.is_some()) {
+                // 本轮第一步就被取消或失败且没有任何输出：撤回这条未被回应的用户消息，
+                // 否则下一轮会出现连续两条 user 消息（已发出的请求前缀不受影响）
+                self.history.pop();
             }
 
             if step.cancelled {
