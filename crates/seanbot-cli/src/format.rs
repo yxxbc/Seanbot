@@ -5,6 +5,17 @@ use std::{path::Path, time::Duration};
 use seanbot_provider::Usage;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+/// 人类可读的字节数：1536 → "1.5 KB"。
+pub(crate) fn human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 /// 12300 → "12.3k"，128000 → "128k"，1000000 → "1M"。
 pub fn tokens(n: u64) -> String {
     let (value, unit) = if n >= 1_000_000 {
