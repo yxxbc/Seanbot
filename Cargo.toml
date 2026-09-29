@@ -16,6 +16,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.28"
 dirs = "6"
+ratatui = "0.29"
+theway-markdown = "0.1"
+tui-textarea = "0.7"
 flate2 = "1"
 futures = "0.3"
 globset = "0.4"
