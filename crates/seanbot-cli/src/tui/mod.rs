@@ -4,8 +4,8 @@
 //! 单行输入框、状态栏，以及把一轮对话的事件画在活动区里。斜杠浮窗、确认框、Ctrl+O 转录、
 //! 鼠标、环环动画分别在 2d/2e/2f 补上。
 //!
-//! 已知限制（2d 解决）：确认模式下 edit/bash 的确认框仍由旧的逐行渲染器绘制，会打乱 TUI 画面；
-//! 需要这些工具时先加 --yolo，或设 SEANBOT_REPL=1 回到逐行 REPL。
+//! 阶段 2d 已接上：斜杠浮窗与二级列表（/model、/resume）、/mouse、以及确认模式下 edit/bash 的
+//! TUI 确认框（TuiPermission，规则见 permission.rs）。
 //!
 //! 伪终端在当前开发沙箱里不可用（openpty 被拒），所以界面靠 ratatui TestBackend 断言
 //! （活动区/输入行/状态栏/光标），入口与按键逻辑用单元测试覆盖。
