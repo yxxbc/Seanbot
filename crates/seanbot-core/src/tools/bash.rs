@@ -1,4 +1,10 @@
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use seanbot_provider::ToolSpec;
@@ -15,6 +21,10 @@ const MAX_TIMEOUT: u64 = 600;
 const MAX_OUTPUT: usize = 30_000;
 const KEEP: usize = 15_000;
 const TITLE_CHARS: usize = 80;
+/// 输出缓冲每侧最多保留的字节数（字符上限的 4 倍，足以容纳 UTF-8）。
+const CAPTURE_BYTES: usize = KEEP * 4;
+/// 进程退出后等待输出管道关闭的宽限期。
+const DRAIN_GRACE: Duration = Duration::from_millis(200);
 
 pub struct BashTool;
 
@@ -81,31 +91,65 @@ impl Tool for BashTool {
         let pid = child.id();
         let mut stdout = child.stdout.take().expect("stdout 已设置为 piped");
 
-        let run = async {
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf).await;
-            let status = child.wait().await;
-            (buf, status)
+        // 边读边截断：内存占用有上限，超时或取消时也能拿到已有输出
+        let capture = Arc::new(Mutex::new(Capture::default()));
+        let mut reader = {
+            let capture = capture.clone();
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    match stdout.read(&mut buf).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => capture.lock().unwrap().push(&buf[..n]),
+                    }
+                }
+            })
         };
-        let (buf, status) = tokio::select! {
-            r = run => r,
-            _ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-                kill_group(pid);
-                return Err(ToolError::Timeout(timeout));
+
+        let ended = tokio::select! {
+            status = child.wait() => Ended::Exited(status),
+            _ = tokio::time::sleep(Duration::from_secs(timeout)) => Ended::TimedOut,
+            _ = ctx.cancel.cancelled() => Ended::Cancelled,
+        };
+        if !matches!(ended, Ended::Exited(_)) {
+            kill_group(pid);
+        }
+        // 后台子进程可能一直占着管道：只给一小段宽限期收尾，不等 EOF
+        if tokio::time::timeout(DRAIN_GRACE, &mut reader)
+            .await
+            .is_err()
+        {
+            reader.abort();
+        }
+        let text = capture.lock().unwrap().render();
+        let body = text.trim_end();
+        let preview: Vec<String> = body.lines().map(str::to_string).collect();
+
+        let status = match ended {
+            Ended::Cancelled => return Err(ToolError::Cancelled),
+            Ended::TimedOut => {
+                let notice = format!("[命令执行超时（{timeout} 秒），已终止整个进程组]");
+                let content = if body.is_empty() {
+                    format!("(无输出)\n{notice}")
+                } else {
+                    format!("{body}\n{notice}")
+                };
+                return Ok(ToolOutput {
+                    content,
+                    summary: format!("超时（{timeout} 秒）"),
+                    preview,
+                    is_error: true,
+                });
             }
-            _ = ctx.cancel.cancelled() => {
-                kill_group(pid);
-                return Err(ToolError::Cancelled);
+            Ended::Exited(status) => {
+                status.map_err(|e| ToolError::Failed(format!("等待进程结束失败：{e}")))?
             }
         };
-        let status = status.map_err(|e| ToolError::Failed(format!("等待进程结束失败：{e}")))?;
 
         let code = status.code();
         let code_text = code
             .map(|c| c.to_string())
             .unwrap_or_else(|| "无（被信号终止）".into());
-        let text = truncate_output(&String::from_utf8_lossy(&buf));
-        let body = text.trim_end();
         let content = if body.is_empty() {
             format!("(无输出)\n[退出码 {code_text}]")
         } else {
@@ -114,9 +158,55 @@ impl Tool for BashTool {
         Ok(ToolOutput {
             content,
             summary: format!("退出码 {code_text}"),
-            preview: body.lines().map(str::to_string).collect(),
+            preview,
             is_error: code != Some(0),
         })
+    }
+}
+
+enum Ended {
+    Exited(std::io::Result<std::process::ExitStatus>),
+    TimedOut,
+    Cancelled,
+}
+
+/// 边读边截断的输出缓冲：只保留开头与结尾各 [`CAPTURE_BYTES`] 字节。
+#[derive(Debug, Default)]
+pub(crate) struct Capture {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    dropped: usize,
+}
+
+impl Capture {
+    pub(crate) fn push(&mut self, data: &[u8]) {
+        let take = CAPTURE_BYTES
+            .saturating_sub(self.head.len())
+            .min(data.len());
+        self.head.extend_from_slice(&data[..take]);
+        self.tail.extend(&data[take..]);
+        if self.tail.len() > CAPTURE_BYTES {
+            let excess = self.tail.len() - CAPTURE_BYTES;
+            self.tail.drain(..excess);
+            self.dropped += excess;
+        }
+    }
+
+    pub(crate) fn render(&self) -> String {
+        let tail: Vec<u8> = self.tail.iter().copied().collect();
+        if self.dropped == 0 {
+            let mut all = self.head.clone();
+            all.extend_from_slice(&tail);
+            return truncate_output(&String::from_utf8_lossy(&all));
+        }
+        let head: String = String::from_utf8_lossy(&self.head)
+            .chars()
+            .take(KEEP)
+            .collect();
+        let tail = String::from_utf8_lossy(&tail);
+        let skip = tail.chars().count().saturating_sub(KEEP);
+        let tail: String = tail.chars().skip(skip).collect();
+        format!("{head}\n…[省略 {} 字节以上]…\n{tail}", self.dropped)
     }
 }
 
@@ -226,11 +316,16 @@ mod tests {
         let pidfile = dir.path().join("pid");
         let started = Instant::now();
         let command = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
-        let err = BashTool
+        let out = BashTool
             .call(json!({"command": command, "timeout": 1}), &ctx)
             .await
-            .unwrap_err();
-        assert!(matches!(err, ToolError::Timeout(1)));
+            .unwrap();
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("命令执行超时（1 秒）"),
+            "{}",
+            out.content
+        );
         assert!(started.elapsed() < Duration::from_secs(5));
         tokio::time::sleep(Duration::from_millis(300)).await;
         let pid: i32 = std::fs::read_to_string(&pidfile)
@@ -240,6 +335,57 @@ mod tests {
             .unwrap();
         let alive = unsafe { libc::kill(pid, 0) } == 0;
         assert!(!alive, "后台子进程 {pid} 应已被杀死");
+    }
+
+    #[tokio::test]
+    async fn timeout_keeps_partial_output() {
+        let (_d, ctx) = ctx();
+        let out = BashTool
+            .call(
+                json!({"command": "echo partial; sleep 10", "timeout": 1}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.starts_with("partial\n"), "{}", out.content);
+        assert!(out.content.contains("超时"));
+    }
+
+    #[tokio::test]
+    async fn backgrounded_command_returns_promptly() {
+        let (_d, ctx) = ctx();
+        let started = Instant::now();
+        let out = BashTool
+            .call(
+                json!({"command": "sleep 5 & echo started", "timeout": 3}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(out.content, "started\n[退出码 0]");
+    }
+
+    #[test]
+    fn capture_is_bounded() {
+        let mut cap = Capture::default();
+        let chunk = vec![b'y'; 64 * 1024];
+        for _ in 0..160 {
+            cap.push(&chunk); // 共 10 MB
+        }
+        assert!(cap.head.len() <= CAPTURE_BYTES);
+        assert!(cap.tail.len() <= CAPTURE_BYTES);
+        let text = cap.render();
+        assert!(text.chars().count() < MAX_OUTPUT + 100);
+        assert!(text.contains("…[省略"));
+        let mut small = Capture::default();
+        small.push(b"hello\n");
+        assert_eq!(small.render(), "hello\n");
     }
 
     #[tokio::test]
