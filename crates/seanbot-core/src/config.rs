@@ -111,9 +111,30 @@ fn mask_key(key: &str) -> String {
 #[serde(default)]
 pub struct ToolsConfig {
     pub bash: BashConfig,
+    pub kb: KbConfig,
     pub read: ReadConfig,
     pub search: SearchConfig,
     pub web: WebConfig,
+}
+
+/// 知识库的搜索上限与远程地址。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KbConfig {
+    /// kb_search 返回条数上限（模型传的 max_results 会收敛到此值）
+    pub max_results: u64,
+    /// 可选；覆盖内置知识库的远程地址（自建镜像或测试用），环境变量 `SEANBOT_KB_BASE_URL` 优先
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+impl Default for KbConfig {
+    fn default() -> Self {
+        Self {
+            max_results: 20,
+            base_url: None,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -277,7 +298,7 @@ pub fn bash_config_guard(command: &str, config_path: &Path, cwd: &Path) -> Resul
 }
 
 /// 命令文本归一化：小写、`\` 换成 `/`、去掉 shell 变量的大括号（`${X}` 与 `$X` 等价）。
-fn flatten(text: &str) -> String {
+pub(crate) fn flatten(text: &str) -> String {
     text.to_lowercase()
         .replace('\\', "/")
         .chars()

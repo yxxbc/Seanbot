@@ -21,15 +21,15 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 |---|---|
 | 名称 | Seanbot |
 | 命令 | `sean` |
-| 版本 | 0.1.1（开发早期） |
+| 版本 | 开发早期（当前版本用 `sean --version` 查；本文件不写死版本号，避免过期） |
 | 技术 | Rust（edition 2024，Rust 1.85+）；目标架构为三 crate 工作区 `seanbot-cli` → `seanbot-core` → `seanbot-provider` |
-| 平台 | macOS / Linux |
-| 模型 | 内置 DeepSeek（默认 `deepseek-chat`），可扩展其他 OpenAI 兼容厂商 |
+| 平台 | macOS / Linux / Windows |
+| 模型 | 内置 DeepSeek（默认 `deepseek-flash`），可扩展其他 OpenAI 兼容厂商 |
 | 界面语言 | 中文（工具名与命令保持英文） |
-| 数据目录 | `~/.seanbot/`（`config.toml` 权限 0600、`history` 输入历史、`sessions/` 会话记录） |
+| 数据目录 | `~/.seanbot/`（`config.toml` 权限 0600、`history` 输入历史、`sessions/` 会话记录、`kb/` 内置知识库、`kb-custom/` 外置知识库） |
 | 环境变量 | `DEEPSEEK_API_KEY` 优先于配置文件中的 key |
 
-**当前状态**：处于 MVP 起步阶段，工具、配置向导与会话记录已可用。设计文档见 `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md`，是架构的权威来源。
+**当前状态**：处于 MVP 起步阶段，工具、配置向导、会话记录与知识库已可用。工具上限可在 `config.toml` 里调整（用 config 工具改）。设计文档见 `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md`，是架构的权威来源。
 
 ## why author create Seanbot?
 
@@ -66,7 +66,11 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 - "在整个项目里搜索所有用到某个符号的地方并汇总。"
 - "解释这个报错并修复它。"
 
-**当前版本还不包含**（规划中）：TUI / 桌面端、知识库与人格、子代理、插件系统、上下文压缩、Markdown 渲染、跨会话长期记忆（自动记住用户偏好与事实）。
+**知识库**：分内置（官方文档，只读）与外置（用户与 agent 自建，可写）两处，
+用 `kb_list` 列条目、`kb_search` 搜内容、`kb_add`/`kb_edit` 维护外置条目、`kb_update`（或 `sean kb update`）更新内置知识库。
+细节见内置条目 `SeanbotTools/02-KnowledgeBase.md`。
+
+**当前版本还不包含**（规划中）：TUI / 桌面端、人格、子代理、插件系统、上下文压缩、Markdown 渲染、跨会话长期记忆（自动记住用户偏好与事实）。
 
 # Seanbot github repo
 

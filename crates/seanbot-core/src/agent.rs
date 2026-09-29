@@ -397,6 +397,14 @@ impl Agent {
             if let Ok(config_path) = crate::config::config_path() {
                 crate::config::bash_config_guard(command, &config_path, &self.cwd)?;
             }
+            // 内置知识库也一样：只读官方内容，bash 不许动
+            if let Ok(builtin) = crate::kb::builtin_dir()
+                && crate::kb::command_mentions_builtin(command, &builtin, &self.cwd)
+            {
+                return Err(
+                    "内置知识库是官方内容，bash 不能改动它；要补充自己的内容请用 kb_add / kb_edit，要更新内置知识库用 kb_update（或 sean kb update）".into(),
+                );
+            }
         }
         let request = PermissionRequest {
             tool: call.name.clone(),
@@ -422,6 +430,8 @@ impl Agent {
             reads: self.reads.clone(),
             config: self.config.clone(),
             config_path: crate::config::config_path().ok(),
+            kb_builtin: crate::kb::builtin_dir().ok(),
+            kb_custom: crate::kb::custom_dir().ok(),
             runtime: self.runtime.clone(),
         };
         match tokio::time::timeout(TOOL_TIMEOUT, tool.call(args, &ctx)).await {

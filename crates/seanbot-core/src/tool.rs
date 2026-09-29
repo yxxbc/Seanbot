@@ -127,6 +127,10 @@ pub struct ToolContext {
     pub config: SharedConfig,
     /// 配置文件路径；`None` 表示取不到数据目录（此时 `config` 工具不可用）
     pub config_path: Option<PathBuf>,
+    /// 内置知识库目录（只读、受保护）；`None` 表示取不到数据目录
+    pub kb_builtin: Option<PathBuf>,
+    /// 外置知识库目录（可写）
+    pub kb_custom: Option<PathBuf>,
     pub runtime: SharedRuntime,
 }
 
@@ -138,7 +142,19 @@ impl ToolContext {
             reads: ReadTracker::default(),
             config: SharedConfig::default(),
             config_path: crate::config::config_path().ok(),
+            kb_builtin: crate::kb::builtin_dir().ok(),
+            kb_custom: crate::kb::custom_dir().ok(),
             runtime: shared_runtime(RuntimeState::default()),
+        }
+    }
+
+    /// 知识库的两个目录；取不到数据目录时报错。
+    pub fn kb_dirs(&self) -> Result<(PathBuf, PathBuf), ToolError> {
+        match (&self.kb_builtin, &self.kb_custom) {
+            (Some(builtin), Some(custom)) => Ok((builtin.clone(), custom.clone())),
+            _ => Err(ToolError::Failed(
+                "取不到数据目录（SEANBOT_HOME / 用户主目录），无法定位知识库".into(),
+            )),
         }
     }
 
@@ -147,6 +163,20 @@ impl ToolContext {
         self.config_path
             .as_deref()
             .is_some_and(|cfg| crate::config::is_config_file(path, cfg))
+    }
+
+    /// 该路径是否位于内置知识库目录内（官方内容，内置工具不得改动）。
+    pub fn is_builtin_kb(&self, path: &Path) -> bool {
+        self.kb_builtin
+            .as_deref()
+            .is_some_and(|dir| crate::kb::is_builtin_path(dir, path))
+    }
+
+    /// 命中内置知识库保护时的统一报错文案。
+    pub fn builtin_kb_error(&self, action: &str) -> ToolError {
+        ToolError::Failed(format!(
+            "内置知识库是官方内容，{action}；要补充自己的内容请写外置知识库（kb_add / kb_edit），要更新内置知识库用 kb_update（或 sean kb update）"
+        ))
     }
 
     /// 在该路径上拒绝操作时的统一报错文案。

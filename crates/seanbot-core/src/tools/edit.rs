@@ -51,6 +51,11 @@ impl Tool for EditTool {
                 "（config.toml 是受保护的配置文件，不能修改；请用 config 工具或手动编辑）".into(),
             );
         }
+        if ctx.is_builtin_kb(&resolve_path(&ctx.cwd, raw)) {
+            return Some(
+                "（内置知识库是官方内容，不能修改；要补自己的内容用 kb_add / kb_edit）".into(),
+            );
+        }
         let old = args.get("old_string")?.as_str()?;
         let new = args.get("new_string")?.as_str()?;
         let replace_all = args
@@ -92,6 +97,10 @@ impl Tool for EditTool {
         // 配置文件受保护：内置工具不能改，只能用 config 工具或手动编辑
         if ctx.is_config_file(&path) {
             return Err(ctx.config_file_error("edit 不能修改它"));
+        }
+        // 内置知识库同样受保护：官方内容只由 kb_update 更新
+        if ctx.is_builtin_kb(&path) {
+            return Err(ctx.builtin_kb_error("edit 不能修改它"));
         }
 
         if old.is_empty() {
@@ -148,16 +157,18 @@ impl Tool for EditTool {
 }
 
 /// 一次替换的完整方案。与 `call`、`preview` 共用，保证预览与实际一致。
-struct EditPlan {
-    updated: String,
-    replaced: usize,
+///
+/// 对 `kb_edit` 可见：知识库条目的替换走同一套引擎，语义（精确优先、occurrence、诊断）完全一致。
+pub(crate) struct EditPlan {
+    pub(crate) updated: String,
+    pub(crate) replaced: usize,
     /// 为了让匹配成功而做的自动调整，会回告给模型
-    notes: Vec<String>,
+    pub(crate) notes: Vec<String>,
 }
 
 /// 计算替换结果。匹配是"精确优先"的：只有精确匹配失败时才尝试剥离行号前缀，
 /// 绝不引入模糊匹配，避免改到不是模型想改的那一处。
-fn plan_edit(
+pub(crate) fn plan_edit(
     raw: &str,
     content: &str,
     old: &str,
@@ -421,7 +432,7 @@ async fn create_file(
 }
 
 /// 返回（新增行数，删除行数，预览行）。
-fn diff_stats(old: &str, new: &str) -> (usize, usize, Vec<String>) {
+pub(crate) fn diff_stats(old: &str, new: &str) -> (usize, usize, Vec<String>) {
     let diff = TextDiff::from_lines(old, new);
     let (mut added, mut removed, mut preview) = (0, 0, Vec::new());
     for change in diff.iter_all_changes() {

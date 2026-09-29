@@ -3,6 +3,7 @@
 mod bash;
 mod config;
 mod edit;
+mod kb;
 mod perceive;
 mod read;
 mod search;
@@ -12,6 +13,7 @@ pub use bash::BashTool;
 pub(crate) use bash::interpreter_label;
 pub use config::ConfigTool;
 pub use edit::EditTool;
+pub use kb::{KbAddTool, KbEditTool, KbListTool, KbSearchTool, KbUpdateTool};
 pub use perceive::PerceiveTool;
 pub use read::ReadTool;
 pub use search::SearchTool;
@@ -25,10 +27,15 @@ use crate::{config::Config, registry::ToolRegistry, tool::Tool};
 pub fn builtin_registry(config: &Config) -> ToolRegistry {
     let web = crate::web::backend_from_config(config);
     let mut registry = ToolRegistry::default();
-    let tools: [Arc<dyn Tool>; 8] = [
+    let tools: [Arc<dyn Tool>; 13] = [
         Arc::new(BashTool),
         Arc::new(ConfigTool),
         Arc::new(EditTool),
+        Arc::new(KbAddTool),
+        Arc::new(KbEditTool),
+        Arc::new(KbListTool),
+        Arc::new(KbSearchTool),
+        Arc::new(KbUpdateTool),
         Arc::new(PerceiveTool),
         Arc::new(ReadTool),
         Arc::new(SearchTool),
@@ -55,6 +62,11 @@ mod tests {
                 "bash",
                 "config",
                 "edit",
+                "kb_add",
+                "kb_edit",
+                "kb_list",
+                "kb_search",
+                "kb_update",
                 "perceive",
                 "read",
                 "search",

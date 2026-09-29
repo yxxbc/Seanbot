@@ -26,6 +26,7 @@ const EDITABLE: &[(&str, &str)] = &[
     ("tools.bash.max_timeout", "1-86400"),
     ("tools.bash.max_output", "100-1000000 字符"),
     ("tools.read.default_lines", "1-1000000 行"),
+    ("tools.kb.max_results", "1-1000 条"),
     ("tools.search.default_results", "1-100000 条"),
     ("tools.web.max_results", "1-50 条"),
     ("tools.web.page_chars", "1000-1000000 字符"),
@@ -216,6 +217,7 @@ fn read_key(cfg: &Config, key: &str) -> Option<Value> {
         "tools.bash.default_timeout" => json!(cfg.tools.bash.default_timeout),
         "tools.bash.max_timeout" => json!(cfg.tools.bash.max_timeout),
         "tools.bash.max_output" => json!(cfg.tools.bash.max_output),
+        "tools.kb.max_results" => json!(cfg.tools.kb.max_results),
         "tools.read.default_lines" => json!(cfg.tools.read.default_lines),
         "tools.search.default_results" => json!(cfg.tools.search.default_results),
         "tools.web.max_results" => json!(cfg.tools.web.max_results),
@@ -240,6 +242,7 @@ fn write_key(cfg: &mut Config, key: &str, value: &Value) -> Result<(), String> {
         "tools.bash.default_timeout" => cfg.tools.bash.default_timeout = int(1, 86_400)?,
         "tools.bash.max_timeout" => cfg.tools.bash.max_timeout = int(1, 86_400)?,
         "tools.bash.max_output" => cfg.tools.bash.max_output = int(100, 1_000_000)? as usize,
+        "tools.kb.max_results" => cfg.tools.kb.max_results = int(1, 1_000)?,
         "tools.read.default_lines" => cfg.tools.read.default_lines = int(1, 1_000_000)?,
         "tools.search.default_results" => cfg.tools.search.default_results = int(1, 100_000)?,
         "tools.web.max_results" => cfg.tools.web.max_results = int(1, 50)?,
@@ -265,6 +268,7 @@ fn reset_key(cfg: &mut Config, key: &str) {
         }
         "tools.bash.max_timeout" => cfg.tools.bash.max_timeout = d.tools.bash.max_timeout,
         "tools.bash.max_output" => cfg.tools.bash.max_output = d.tools.bash.max_output,
+        "tools.kb.max_results" => cfg.tools.kb.max_results = d.tools.kb.max_results,
         "tools.read.default_lines" => cfg.tools.read.default_lines = d.tools.read.default_lines,
         "tools.search.default_results" => {
             cfg.tools.search.default_results = d.tools.search.default_results
