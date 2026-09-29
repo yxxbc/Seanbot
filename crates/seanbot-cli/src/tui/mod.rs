@@ -12,10 +12,13 @@
 
 mod permission;
 mod slash;
+mod transcript;
 
 pub use permission::{Ask, Rules, TuiPermission};
+pub use transcript::Entry;
 
 use std::{
+    collections::HashMap,
     io::{self, Write},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -103,6 +106,8 @@ pub enum Action {
     Command(&'static str),
     /// 二级列表里选中了一项（模型 id / 会话文件路径）
     Choose(PickKind, String),
+    /// 打开 Ctrl+O 转录视图
+    OpenTranscript,
     /// 退出程序
     Quit,
 }
@@ -199,6 +204,15 @@ impl Input {
 }
 
 /// 界面状态。
+/// 工具调用的显示信息（完整结果要等工具消息回来才有）。
+#[derive(Debug, Default, Clone)]
+struct ToolMeta {
+    name: String,
+    title: String,
+    ok: bool,
+    summary: String,
+}
+
 /// 确认框状态（设计书 §4.8）。
 struct ConfirmState {
     /// 待回传的请求；拿走它就等于关闭确认框
@@ -267,6 +281,12 @@ pub struct App {
     picker: Option<Picker>,
     /// 工具确认框
     confirm: Option<ConfirmState>,
+    /// 本会话的转录（Ctrl+O）
+    transcript: Vec<Entry>,
+    /// 工具调用的显示信息，按 call_id 暂存
+    tool_meta: HashMap<String, ToolMeta>,
+    /// 转录视图的选择/展开状态
+    transcript_view: transcript::View,
     /// 当前工作目录（状态栏显示用）
     cwd: String,
     /// 待写进终端滚动区的行（写出去就从内存里丢掉）
@@ -297,6 +317,9 @@ impl App {
             popup: None,
             picker: None,
             confirm: None,
+            transcript: Vec::new(),
+            tool_meta: HashMap::new(),
+            transcript_view: transcript::View::default(),
             cwd: cwd.to_string(),
             pending: Vec::new(),
             markdown: None,
@@ -416,6 +439,7 @@ impl App {
                     self.refresh_popup();
                     return Action::None;
                 }
+                KeyCode::Char('o') => return Action::OpenTranscript,
                 _ => return Action::None,
             }
         }
@@ -503,12 +527,32 @@ impl App {
                     self.tail = stream.tail();
                 }
             }
-            AgentEvent::ToolStarted { title, name, .. } => {
+            AgentEvent::MessageAppended(message) => self.record_message(message),
+            AgentEvent::MessageRetracted => {
+                if matches!(self.transcript.last(), Some(Entry::User(_))) {
+                    self.transcript.pop();
+                }
+            }
+            AgentEvent::ToolStarted {
+                call_id,
+                title,
+                name,
+            } => {
                 self.flush_markdown();
                 let label = format::tool_label(&name, &title);
                 self.push_line(format!("⏳ {label}"));
+                self.tool_meta.insert(
+                    call_id,
+                    ToolMeta {
+                        name,
+                        title,
+                        ok: true,
+                        summary: String::new(),
+                    },
+                );
             }
             AgentEvent::ToolFinished {
+                call_id,
                 ok,
                 summary,
                 elapsed,
@@ -516,6 +560,10 @@ impl App {
             } => {
                 let mark = if ok { "✓" } else { "✗" };
                 self.push_line(format!("{mark} {summary} · {}", format::secs(elapsed)));
+                if let Some(meta) = self.tool_meta.get_mut(&call_id) {
+                    meta.ok = ok;
+                    meta.summary = summary;
+                }
             }
             AgentEvent::TurnFinished { usage, steps } => {
                 self.flush_markdown();
@@ -537,6 +585,7 @@ impl App {
     pub fn turn_started(&mut self, prompt: &str) {
         self.flush_markdown();
         self.push_line(format!("› {prompt}"));
+        self.transcript.push(Entry::User(prompt.to_string()));
         self.running = true;
     }
 
@@ -600,6 +649,54 @@ impl App {
     fn activity_lines(&self, height: usize) -> Vec<Line<'static>> {
         let skip = self.tail.len().saturating_sub(height);
         self.tail.iter().skip(skip).cloned().collect()
+    }
+
+    /// 转录内容（Ctrl+O 视图用）。
+    pub(crate) fn transcript(&self) -> &[Entry] {
+        &self.transcript
+    }
+
+    pub(crate) fn transcript_view(&self) -> &transcript::View {
+        &self.transcript_view
+    }
+
+    pub(crate) fn transcript_view_mut(&mut self) -> &mut transcript::View {
+        &mut self.transcript_view
+    }
+
+    /// 从内核消息里补转录：工具结果的完整内容只在这里有。
+    fn record_message(&mut self, message: seanbot_provider::Message) {
+        match message.role {
+            seanbot_provider::Role::Tool => {
+                let id = message.tool_call_id.clone().unwrap_or_default();
+                let meta = self.tool_meta.remove(&id).unwrap_or_default();
+                self.transcript.push(Entry::Tool {
+                    name: meta.name,
+                    title: meta.title,
+                    ok: meta.ok,
+                    summary: meta.summary,
+                    content: message.content,
+                });
+            }
+            seanbot_provider::Role::Assistant => {
+                if message.content.trim().is_empty() {
+                    return;
+                }
+                // 流式期间可能已经记了一条，用最终内容替换
+                if matches!(self.transcript.last(), Some(Entry::Assistant(_))) {
+                    self.transcript.pop();
+                }
+                self.transcript.push(Entry::Assistant(message.content));
+            }
+            seanbot_provider::Role::User => {
+                // turn_started 已经记过一次，别重复
+                if matches!(self.transcript.last(), Some(Entry::User(text)) if *text == message.content)
+                {
+                    return;
+                }
+                self.transcript.push(Entry::User(message.content));
+            }
+        }
     }
 
     /// 内核请求授权：打开确认框。
@@ -1264,6 +1361,10 @@ pub async fn run(
                         Action::Command(name) => {
                             run_command(name, agent, journal, &cwd, &mut app, cfg).await
                         }
+                        Action::OpenTranscript => {
+                            transcript::show(&mut terminal, &mut app, &mut events, cfg.ui.mouse)
+                                .await?;
+                        }
                         Action::Choose(kind, value) => {
                             apply_choice(kind, value, agent, journal, &mut app)
                         }
@@ -1529,6 +1630,75 @@ mod tests {
             },
             rx,
         )
+    }
+
+    #[test]
+    fn ctrl_o_opens_the_transcript_view() {
+        let mut app = new_app();
+        assert_eq!(app.on_key(ctrl('o')), Action::OpenTranscript);
+    }
+
+    #[tokio::test]
+    async fn transcript_records_full_tool_results() {
+        use seanbot_provider::{Message, Role};
+
+        let mut app = new_app();
+        app.turn_started("看看仓库");
+        app.on_agent_event(AgentEvent::ToolStarted {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            title: "Bash(cargo test)".into(),
+        });
+        app.on_agent_event(AgentEvent::ToolFinished {
+            call_id: "c1".into(),
+            ok: true,
+            summary: "测试通过".into(),
+            preview: Vec::new(),
+            elapsed: Duration::from_millis(1200),
+        });
+        app.on_agent_event(AgentEvent::MessageAppended(Message {
+            role: Role::Tool,
+            content: "running 3 tests\nall ok".into(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+            tool_call_id: Some("c1".into()),
+        }));
+        app.on_agent_event(AgentEvent::MessageAppended(Message {
+            role: Role::Assistant,
+            content: "都过了".into(),
+            reasoning: None,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }));
+
+        let entries = app.transcript();
+        assert_eq!(entries.len(), 3, "用户 + 工具 + 助手：{entries:?}");
+        assert!(matches!(&entries[0], Entry::User(text) if text == "看看仓库"));
+        match &entries[1] {
+            Entry::Tool {
+                name,
+                ok,
+                summary,
+                content,
+                ..
+            } => {
+                assert_eq!(name, "bash");
+                assert!(*ok);
+                assert_eq!(summary, "测试通过");
+                assert!(content.contains("all ok"), "工具结果要完整：{content}");
+            }
+            other => panic!("应当是工具条目：{other:?}"),
+        }
+        assert!(matches!(&entries[2], Entry::Assistant(text) if text == "都过了"));
+    }
+
+    #[test]
+    fn transcript_drops_a_retracted_user_message() {
+        let mut app = new_app();
+        app.turn_started("被取消的问题");
+        assert_eq!(app.transcript().len(), 1);
+        app.on_agent_event(AgentEvent::MessageRetracted);
+        assert!(app.transcript().is_empty(), "撤回后不该留下这条消息");
     }
 
     #[tokio::test]
