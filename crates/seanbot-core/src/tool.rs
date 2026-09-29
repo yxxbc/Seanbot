@@ -131,6 +131,8 @@ pub struct ToolContext {
     pub kb_builtin: Option<PathBuf>,
     /// 外置知识库目录（可写）
     pub kb_custom: Option<PathBuf>,
+    /// 数据目录：技能、知识库等全局资源的根；`None` 表示取不到
+    pub data_dir: Option<PathBuf>,
     pub runtime: SharedRuntime,
 }
 
@@ -144,6 +146,7 @@ impl ToolContext {
             config_path: crate::config::config_path().ok(),
             kb_builtin: crate::kb::builtin_dir().ok(),
             kb_custom: crate::kb::custom_dir().ok(),
+            data_dir: crate::config::data_dir().ok(),
             runtime: shared_runtime(RuntimeState::default()),
         }
     }

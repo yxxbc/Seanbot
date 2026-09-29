@@ -432,6 +432,7 @@ impl Agent {
             config_path: crate::config::config_path().ok(),
             kb_builtin: crate::kb::builtin_dir().ok(),
             kb_custom: crate::kb::custom_dir().ok(),
+            data_dir: crate::config::data_dir().ok(),
             runtime: self.runtime.clone(),
         };
         match tokio::time::timeout(TOOL_TIMEOUT, tool.call(args, &ctx)).await {

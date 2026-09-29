@@ -529,6 +529,7 @@ async fn request_prefix_is_stable_across_steps_and_turns() {
             "perceive",
             "read",
             "search",
+            "skill",
             "web_fetch",
             "web_search"
         ]

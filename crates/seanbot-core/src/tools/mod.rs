@@ -7,6 +7,7 @@ mod kb;
 mod perceive;
 mod read;
 mod search;
+mod skill;
 mod web;
 
 pub use bash::BashTool;
@@ -17,6 +18,7 @@ pub use kb::{KbAddTool, KbEditTool, KbListTool, KbSearchTool, KbUpdateTool};
 pub use perceive::PerceiveTool;
 pub use read::ReadTool;
 pub use search::SearchTool;
+pub use skill::SkillTool;
 pub use web::{WebFetchTool, WebSearchTool};
 
 use std::sync::Arc;
@@ -27,7 +29,7 @@ use crate::{config::Config, registry::ToolRegistry, tool::Tool};
 pub fn builtin_registry(config: &Config) -> ToolRegistry {
     let web = crate::web::backend_from_config(config);
     let mut registry = ToolRegistry::default();
-    let tools: [Arc<dyn Tool>; 13] = [
+    let tools: [Arc<dyn Tool>; 14] = [
         Arc::new(BashTool),
         Arc::new(ConfigTool),
         Arc::new(EditTool),
@@ -39,6 +41,7 @@ pub fn builtin_registry(config: &Config) -> ToolRegistry {
         Arc::new(PerceiveTool),
         Arc::new(ReadTool),
         Arc::new(SearchTool),
+        Arc::new(SkillTool),
         Arc::new(WebFetchTool::new(web.clone())),
         Arc::new(WebSearchTool::new(web)),
     ];
@@ -70,6 +73,7 @@ mod tests {
                 "perceive",
                 "read",
                 "search",
+                "skill",
                 "web_fetch",
                 "web_search"
             ]
