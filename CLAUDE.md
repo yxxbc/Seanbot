@@ -43,3 +43,18 @@ Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`
 - User-facing UI text is Chinese; tool names and commands stay English.
 - Library crates use `thiserror`; the CLI uses `anyhow`.
 - Out of scope for the MVP (don't build unless asked): TUI/desktop, confirmation UI, knowledge base, personas, subagents, plugins, session persistence, context compaction, Markdown rendering.
+
+## Commit conventions (hard-enforced)
+
+Format: `<type>(<scope>): <Chinese description>` — half-width colon, one space after it. Example: `feat(cli): 添加交互式对话`.
+Allowed types: `feat fix docs style refactor perf test build ci chore revert`; scope is optional (`fix: 修正拼写`); `!` marks breaking changes (`feat(cli)!: ...`). The description must not end with `.` or `。`; ASCII-only first lines must be ≤ 72 chars.
+One commit = one logical change; new files are committed individually.
+
+Git hooks in `.githooks/` enforce this hard (install once per clone: `bash scripts/install-hooks.sh`, sets `core.hooksPath`):
+- `commit-msg` — rejects messages that violate the format above (also full-width `：` and trailing punctuation).
+- `pre-commit` — rejects files > 1 MiB, secret-like files (`.env`, `*.pem`, `*.key`, ...), and files containing merge-conflict markers.
+Bypass (discouraged): `git commit --no-verify`.
+
+`CHANGELOG.md` follows Keep a Changelog (`feat` → Added, `fix` → Fixed); user-visible changes update it in the same PR.
+Issue / PR templates live in `.github/`; PRs must fill every checklist item.
+
