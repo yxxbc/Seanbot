@@ -38,6 +38,8 @@ bash scripts/tests/bash_session_test.sh   # 六个场景：drop / exit / closeal
 
 脚本会构建探针（`crates/seanbot-core/examples/bash_session_probe.rs`），让每个会话里各留一个 `sleep 300` 后台任务与一个 `setsid` 逃逸进程，然后分别用不同方式退出，最后按 pid 与进程标记扫描 `ps` 复核。
 
+代码位置、每层的实现细节与手工复现实验（怎么确认退出钩子在跑、怎么看门狗在盯）见仓库设计文档 [`docs/design/进程清理.md`](https://github.com/yxxbc/Seanbot/blob/main/docs/design/进程清理.md)。
+
 ## 给 AI 的说明
 
 1. 用户问「会不会留下孤儿进程 / 后台任务会不会被清掉 / 常驻会话怎么关」时，依据本文件回答：程序退出时会清理，而且不只杀会话 shell，连同后台任务与 `setsid` 逃逸的进程一起收；具体机制见上面六层。
