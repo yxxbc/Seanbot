@@ -21,6 +21,7 @@ use crate::{
     permission::{Decision, PermissionHandler, PermissionRequest},
     prompt,
     registry::ToolRegistry,
+    runtime::{RuntimeState, SharedRuntime, shared_runtime},
     tool::{ReadTracker, Tool, ToolContext, ToolOutput},
 };
 
@@ -50,6 +51,7 @@ pub struct Agent {
     denylist: Denylist,
     cwd: PathBuf,
     max_steps: u32,
+    runtime: SharedRuntime,
 }
 
 #[derive(Default)]
@@ -74,9 +76,15 @@ impl Agent {
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let system = prompt::system_prompt(&cwd, std::env::consts::OS, &date);
         let denylist = Denylist::new(&config.tools.bash.deny);
+        let model = model.into();
+        let runtime = shared_runtime(RuntimeState {
+            provider: provider.info().id.clone(),
+            model: model.clone(),
+            ..RuntimeState::default()
+        });
         Self {
             provider,
-            model: model.into(),
+            model,
             tools,
             history: Vec::new(),
             system,
@@ -86,6 +94,7 @@ impl Agent {
             denylist,
             cwd,
             max_steps: DEFAULT_MAX_STEPS,
+            runtime,
         }
     }
 
@@ -100,10 +109,16 @@ impl Agent {
 
     pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
+        self.runtime.write().unwrap().model = self.model.clone();
     }
 
     pub fn provider(&self) -> &Arc<dyn Provider> {
         &self.provider
+    }
+
+    /// 与工具、UI 共享的运行时状态。
+    pub fn runtime(&self) -> SharedRuntime {
+        self.runtime.clone()
     }
 
     pub fn history(&self) -> &[Message] {
@@ -345,6 +360,7 @@ impl Agent {
             cancel: cancel.child_token(),
             reads: self.reads.clone(),
             config: self.config.clone(),
+            runtime: self.runtime.clone(),
         };
         match tokio::time::timeout(TOOL_TIMEOUT, tool.call(args, &ctx)).await {
             Ok(result) => result.map_err(|e| e.to_string()),

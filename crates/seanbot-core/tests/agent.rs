@@ -518,3 +518,16 @@ async fn clear_keeps_system_prompt() {
     assert_eq!(h.agent.system_prompt(), before);
     assert!(before.contains(&h.dir.path().display().to_string()));
 }
+
+#[tokio::test]
+async fn runtime_reflects_provider_and_model() {
+    let mut h = harness(vec![]);
+    {
+        let rt = h.agent.runtime();
+        let state = rt.read().unwrap();
+        assert_eq!(state.provider, "fake");
+        assert_eq!(state.model, "fake-model");
+    }
+    h.agent.set_model("other");
+    assert_eq!(h.agent.runtime().read().unwrap().model, "other");
+}

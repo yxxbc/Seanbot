@@ -13,7 +13,10 @@ use seanbot_provider::ToolSpec;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
+use crate::{
+    config::Config,
+    runtime::{RuntimeState, SharedRuntime, shared_runtime},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolSource {
@@ -93,6 +96,7 @@ pub struct ToolContext {
     pub cancel: CancellationToken,
     pub reads: ReadTracker,
     pub config: Arc<Config>,
+    pub runtime: SharedRuntime,
 }
 
 impl ToolContext {
@@ -102,6 +106,7 @@ impl ToolContext {
             cancel: CancellationToken::new(),
             reads: ReadTracker::default(),
             config: Arc::new(Config::default()),
+            runtime: shared_runtime(RuntimeState::default()),
         }
     }
 }
