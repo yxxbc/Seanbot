@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://yxxbc.github.io/Seanbot/sitemap.xml

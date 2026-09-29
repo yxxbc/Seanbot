@@ -30,9 +30,15 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - `sean skills`：查看当前会注入哪些指令文件、发现了哪些技能（来源、路径、大小与解析告警）
 - 系统提示词补上 `sean kb` / `sean skills` 命令与技能使用约定，并写明「项目指令」与安全护栏的优先级
 - `tools.kb.max_results`（`kb_search` 命中上限）纳入 `config` 工具可改键；内置知识库文档新增 `SeanbotTools/02-KnowledgeBase.md`（知识库自述）
+- 官网改为「脚本优先」的安装与升级：一行命令自动识别系统与架构、下载并校验 SHA256，装好后 `sean update` 一键升级（Windows 重跑安装命令），不再引导用户点进 GitHub 手动找包；手动下载压缩包降为次要入口
+- 官网页脚显示当前版本（`最新版本 vX.Y.Z`）：`site/assets/version.json` 由 `scripts/sync-site.sh` 在发布（`release.sh`）与部署（`pages.yml`）时自动同步，版本取自 `Cargo.toml`、日期取自 CHANGELOG
+- 官网补齐分享卡片 `site/assets/og.png`（1200×630，`scripts/make-og.py` 可重新生成）与绝对地址的 og / twitter 元信息、canonical、`robots.txt`、`sitemap.xml`
+- 脚本测试新增站点自检 `scripts/tests/site_test.sh`：版本一致、素材齐全、分享元信息为绝对地址、HTML 钩子与 `app.js` 对得上
 
 ### 修复
 
+- 官网「八个内置工具」等文案与 TUI 状态过期：工具改为按分组描述（内核 / 联网 / 知识库 / 技能 / 配置），补上指令文件、技能与知识库三条能力；TUI 标注为「开发中」（ratatui 全屏界面尚未落地）
+- 官网 `og:image` 之前是相对路径的 SVG，多数平台既不识别相对地址也不渲染 SVG；改为绝对地址的 `assets/og.png`（1200×630），并补 `og:locale` / `og:site_name` / `twitter:card` 与 `canonical`
 - `kb_edit` 命中内置知识库条目时不再报「条目不存在」：现在说明它是官方只读条目，并给出两条替代路径（改仓库 `kb/` 发布后 `kb_update`，或用 `kb_add` 写进外置知识库）
 - `kb_add` 写入与内置同名条目时会在结果里提示两条并存、`kb_search` 以 `[内置]`/`[外置]` 区分
 - 内置知识库对 Sean 只读：`kb_list` / `kb_search` 可以查，`kb_edit` / `kb_add` 只写外置知识库，`edit` 拒绝写入、`bash` 命中路径写法时直接拒绝；官方内容的唯一入口是 `kb_update` 从官方地址同步（它不接受任意内容写入）

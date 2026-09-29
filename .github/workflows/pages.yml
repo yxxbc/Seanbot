@@ -14,6 +14,8 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'Cargo.toml'
+      - 'CHANGELOG.md'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -39,6 +41,9 @@ jobs:
 
       - name: 配置 Pages
         uses: actions/configure-pages@v5
+
+      - name: 同步站点版本
+        run: bash scripts/sync-site.sh
 
       # 站点是纯静态文件，没有构建步骤：直接把 site/ 打包上传
       - name: 打包 site/

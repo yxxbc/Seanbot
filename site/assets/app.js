@@ -12,8 +12,10 @@
    2) 新增平台或架构：在 TARGETS 里加一项（target 必须是 CI 真实构建的三元组，
       见 .github/workflows/release.yml 的 matrix），页面会自动多出一个系统/架构按钮。
       归档扩展名在 TARGETS[x].archs[].ext 里写死，和 scripts/package.sh 保持一致。
-   3) TUI 正式发布后：把 PRODUCTS.tui.status 改成 'available'、statusText 改成 '可用'，
-      并把 caption 里的「预发布」去掉即可，其余逻辑不用动。
+   3) TUI 正式发布后：把 PRODUCTS.tui.share 改成 true、pill 改成「可用」，
+      并把 statusText / caption 里的「还没落地」字样去掉即可，其余逻辑不用动。
+   4) 版本徽章：site/assets/version.json 由 scripts/sync-site.sh 生成（版本取自 Cargo.toml、
+      发布日期取自 CHANGELOG），发布与部署时各跑一次，不需要手改。
    ========================================================================== */
 
 (function () {
@@ -25,27 +27,30 @@
   var INSTALL_SH = 'curl -fsSL https://raw.githubusercontent.com/yxxbc/Seanbot/main/scripts/install.sh | sh';
   var INSTALL_PS1 = 'irm https://raw.githubusercontent.com/yxxbc/Seanbot/main/scripts/install.ps1 | iex';
 
-  /* 产品形态。share=true 表示有可下载的发布包；app 未发布所以是 false。 */
+  /* 产品形态。share=true 表示有可下载的发布包；tui / app 未发布所以是 false。 */
   var PRODUCTS = {
     cli: {
       name: 'CLI',
       pill: '可用',
       pillClass: '',
-      statusText: '逐行对话的终端版本，五个平台的发布包都已就绪（预发布）。',
+      statusText: '逐行对话的终端版本，五个构建目标都已就绪（预发布）。',
       share: true,
       preview: 'previews/cli.png',
       windowTitle: 'sean — 终端',
-      caption: 'CLI：进入后直接输入问题；/help 看命令，Ctrl+C 中断当前任务。'
+      caption: 'CLI：输入问题直接开聊；/help 看命令，Ctrl+C 中断当前任务，sean update 升级。'
     },
     tui: {
       name: 'TUI',
-      pill: '预发布',
-      pillClass: 'pill--pre',
-      statusText: '全屏终端界面：斜杠命令浮窗、工具确认、Markdown 渲染、Ctrl+O 转录视图。',
-      share: true,
+      pill: '开发中',
+      pillClass: 'pill--wip',
+      statusText: '全屏 TUI 还没落地：斜杠命令、工具确认与 Markdown 渲染现在已在 CLI 里可用。',
+      share: false,
       preview: 'previews/tui.png',
       windowTitle: 'sean — TUI',
-      caption: 'TUI：与 CLI 是同一个 sean 可执行文件，安装后运行 sean 即可。'
+      caption: 'TUI：与 CLI 共用一个 sean 可执行文件，发布后安装命令不变。',
+      wipTitle: '全屏 TUI 还在开发',
+      wipText: '斜杠命令、工具确认与 Markdown 渲染已经在 CLI 里可用；全屏界面发布后安装方式不变，sean update 就能升上去。',
+      wipLink: { text: '关注 Releases', href: REPO + '/releases' }
     },
     app: {
       name: 'App',
@@ -55,7 +60,10 @@
       share: false,
       preview: 'previews/app.png',
       windowTitle: 'Seanbot — 桌面端',
-      caption: 'App：桌面端仍在开发，截图稍后补上。'
+      caption: 'App：桌面端仍在开发，截图稍后补上。',
+      wipTitle: '桌面端正在开发',
+      wipText: '目前还没有可下载的版本。想第一时间拿到，可以到 GitHub 关注 Releases，或者在 Issue 里说一句你最想要的能力。',
+      wipLink: { text: '关注 Releases', href: REPO + '/releases' }
     }
   };
 
@@ -71,7 +79,7 @@
         { id: 'x64', label: 'Intel', target: 'x86_64-apple-darwin', ext: 'tar.gz' }
       ],
       install: INSTALL_SH,
-      installNote: '装到 ~/.local/bin；可用 SEANBOT_VERSION、SEANBOT_INSTALL_DIR 覆盖默认行为。'
+      installNote: '装到 ~/.local/bin；之后用 `sean update` 升级，不必回官网。可用 SEANBOT_VERSION、SEANBOT_INSTALL_DIR 覆盖默认行为。'
     },
     windows: {
       label: 'Windows',
@@ -81,7 +89,7 @@
         { id: 'x64', label: 'x64', target: 'x86_64-pc-windows-msvc', ext: 'zip' }
       ],
       install: INSTALL_PS1,
-      installNote: '在 PowerShell 中运行；ARM 设备用 x64 包（系统自带模拟）。'
+      installNote: '在 PowerShell 5.1+ 里运行；升级重跑这条命令即可（Windows 不能在运行时替换自身）。ARM 设备用 x64 包（系统自带模拟）。'
     },
     linux: {
       label: 'Linux',
@@ -92,7 +100,7 @@
         { id: 'arm64', label: 'ARM64', target: 'aarch64-unknown-linux-gnu', ext: 'tar.gz' }
       ],
       install: INSTALL_SH,
-      installNote: '构建基于 glibc；安装脚本会自动挑选对应架构的包。'
+      installNote: '需要 curl 与 tar；构建基于 glibc。安装脚本会自动挑对应架构的包，升级重跑这条命令或 `sean update`。'
     }
   };
 
@@ -161,6 +169,12 @@
     els.osRow.hidden = !p.share;
     els.archRow.hidden = !p.share || platform().archs.length < 2;
     els.installBox.hidden = !p.share;
+    if (!p.share) {
+      els.wipTitle.textContent = p.wipTitle || '';
+      els.wipText.textContent = p.wipText || '';
+      els.wipLink.textContent = (p.wipLink && p.wipLink.text) || '关注 Releases';
+      els.wipLink.href = (p.wipLink && p.wipLink.href) || RELEASES;
+    }
   }
 
   function renderOS() {
@@ -204,9 +218,9 @@
     var p = product();
     var arch = currentArch();
     var file = 'sean-' + arch.target + '.' + arch.ext;
-    els.downloadLabel.textContent = '下载 ' + platform().label + '（' + arch.label + '）';
+    els.downloadLabel.textContent = '手动下载 ' + platform().label + '（' + arch.label + '）';
     els.downloadBtn.setAttribute('href', LATEST_DOWNLOAD + file);
-    els.downloadMeta.textContent = file + ' · 校验和见 Release 里的 SHA256SUMS';
+    els.downloadMeta.textContent = file + ' · 解包即用；校验和见 Release 里的 SHA256SUMS';
   }
 
   function renderInstall() {
@@ -218,10 +232,11 @@
     };
     var notes = {
       cli: platform().installNote,
-      tui: platform().installNote + ' TUI 与 CLI 共用同一个 sean 可执行文件。',
+      tui: platform().installNote + ' 全屏 TUI 还没发布，现在装好 CLI 就能用斜杠命令与工具确认。',
       app: ''
     };
-    els.installTitle.textContent = state.os === 'windows' ? '一行命令安装（PowerShell）' : '一行命令安装';
+    els.installTitle.textContent =
+      state.os === 'windows' ? '一行命令安装（推荐 · PowerShell）' : '一行命令安装（推荐）';
     els.installCmd.textContent = cmds[state.product] || '';
     els.installNote.textContent = notes[state.product] || '';
     els.copyBtn.classList.remove('is-done');
@@ -377,6 +392,10 @@
     els.copyBtn = $('copy-btn');
     els.copyLabel = $('copy-label');
     els.wip = $('wip-note');
+    els.wipTitle = $('wip-title');
+    els.wipText = $('wip-text');
+    els.wipLink = $('wip-link');
+    els.versionPill = $('version-pill');
     els.detectNote = $('detect-note');
     els.previewBody = document.querySelector('.window__body');
     els.previewImg = $('preview-img');
@@ -396,6 +415,7 @@
     bindOS();
     bindCopy();
     render();
+    renderVersion();
 
     /* 架构是异步问出来的，拿到后只更新与架构有关的部分 */
     detectArch().then(function (arch) {
@@ -407,6 +427,21 @@
       renderOS();
       renderDownload();
     });
+  }
+
+  /* 版本号来自 assets/version.json：由 scripts/sync-site.sh 在发布/部署时写入，
+     用户不必点进 GitHub 才知道当前版本；文件缺失时安静隐藏。 */
+  function renderVersion() {
+    if (!window.fetch) return;
+    window.fetch('assets/version.json', { cache: 'no-cache' })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (data) {
+        if (!data || !data.version) return;
+        els.versionPill.textContent = '最新版本 v' + data.version;
+        els.versionPill.title = data.released ? '发布于 ' + data.released : '';
+        els.versionPill.hidden = false;
+      })
+      .catch(function () { /* 本地打开或文件缺失：不显示版本徽章 */ });
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

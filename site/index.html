@@ -9,12 +9,22 @@
 <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="assets/style.css">
 
-<!-- 社交分享卡片：素材补齐后换成 1200×630 的 PNG（assets/og.png），SVG 部分平台不识别 -->
+<!-- 分享卡片用 1200×630 的 PNG（site/assets/og.png，由 scripts/make-og.sh 生成） -->
+<link rel="canonical" href="https://yxxbc.github.io/Seanbot/">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="Seanbot">
+<meta property="og:locale" content="zh_CN">
 <meta property="og:title" content="Seanbot — 终端里的全能 AI 代理">
-<meta property="og:description" content="说清楚你要什么，剩下的交给它。Rust 编写的中文终端 AI 代理。">
-<meta property="og:image" content="assets/icon.svg">
+<meta property="og:description" content="说清楚你要什么，剩下的交给它。一行命令安装，装完 sean update 一键升级。Rust 编写的中文终端 AI 代理。">
+<meta property="og:image" content="https://yxxbc.github.io/Seanbot/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Seanbot — 终端里的中文 AI 代理">
 <meta property="og:url" content="https://yxxbc.github.io/Seanbot/">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Seanbot — 终端里的全能 AI 代理">
+<meta name="twitter:description" content="说清楚你要什么，剩下的交给它。一行命令安装，sean update 一键升级。">
+<meta name="twitter:image" content="https://yxxbc.github.io/Seanbot/assets/og.png">
 
 </head>
 <body>
@@ -85,13 +95,14 @@
         <div class="hero__cta">
           <a class="btn btn--primary" href="#download">
             <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
-            下载 Seanbot
+            一行命令安装
           </a>
           <a class="btn btn--ghost" href="#preview">看看长什么样</a>
         </div>
         <ul class="meta-list">
           <li>Rust 1.85+</li>
           <li>macOS · Linux · Windows</li>
+          <li>装完 <code>sean update</code> 一键升级</li>
           <li>Apache-2.0 开源</li>
         </ul>
       </div>
@@ -120,12 +131,16 @@
     </div>
   </section>
 
-  <!-- ============ 下载 ============ -->
+  <!-- ============ 安装 / 升级 ============ -->
   <section class="section" id="download">
     <div class="section__head">
-      <p class="eyebrow">下载</p>
-      <h2>选一个版本，装到你的机器上</h2>
-      <p class="lede">页面会自动识别你的系统并选中对应的包；识别不准就手动点一下系统图标。</p>
+      <p class="eyebrow">安装与升级</p>
+      <h2>一行命令装好，之后不用再回官网</h2>
+      <p class="lede">
+        脚本会自动下载最新版并校验 SHA256；装好后用 <code>sean update</code> 升级
+        （Windows 上重跑一次安装命令即可）。下面的系统与架构已按你的环境选好，
+        也可以手动下载压缩包自己装。
+      </p>
     </div>
 
     <div class="panel">
@@ -149,6 +164,7 @@
         <div class="statusline">
           <span class="pill" id="status-pill">可用</span>
           <p class="statusline__text" id="status-text"></p>
+          <span class="pill pill--ver" id="version-pill" hidden></span>
         </div>
 
         <div class="os">
@@ -172,18 +188,9 @@
           <div class="arch__chips" role="group" aria-label="CPU 架构" id="arch-chips"></div>
         </div>
 
-        <div class="actions">
-          <a class="btn btn--primary" id="download-btn" href="https://github.com/yxxbc/Seanbot/releases">
-            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
-            <span id="download-label">下载</span>
-          </a>
-          <a class="btn btn--ghost" href="https://github.com/yxxbc/Seanbot/releases">所有版本与校验和</a>
-        </div>
-        <p class="actions__meta" id="download-meta"></p>
-
         <div class="install" id="install-box">
           <div class="install__head">
-            <span id="install-title">一行命令安装</span>
+            <span id="install-title">一行命令安装（推荐）</span>
             <button class="copy" type="button" id="copy-btn">
               <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
               <span id="copy-label">复制</span>
@@ -193,20 +200,30 @@
           <p class="install__note" id="install-note"></p>
         </div>
 
-        <!-- App 未发布时的说明；由 JS 控制显示 -->
+        <div class="actions actions--secondary">
+          <a class="btn btn--ghost" id="download-btn" href="https://github.com/yxxbc/Seanbot/releases">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            <span id="download-label">手动下载压缩包</span>
+          </a>
+          <a class="btn btn--ghost" href="https://github.com/yxxbc/Seanbot/releases">所有版本与校验和</a>
+        </div>
+        <p class="actions__meta" id="download-meta"></p>
+
+        <!-- 产品还没发布时的说明；标题与正文由 JS 按产品填 -->
         <div class="wip" id="wip-note" hidden>
-          <p class="wip__title">桌面端正在开发</p>
-          <p class="wip__text">
-            目前还没有可下载的桌面版。想第一时间拿到，可以到 GitHub 关注 Releases，
+          <p class="wip__title" id="wip-title">桌面端正在开发</p>
+          <p class="wip__text" id="wip-text">
+            目前还没有可下载的版本。想第一时间拿到，可以到 GitHub 关注 Releases，
             或者在 Issue 里说一句你最想要的能力。
           </p>
-          <a class="btn btn--ghost" href="https://github.com/yxxbc/Seanbot/releases">关注 Releases</a>
+          <a class="btn btn--ghost" id="wip-link" href="https://github.com/yxxbc/Seanbot/releases">关注 Releases</a>
         </div>
 
         <p class="fineprint">
-          预发布版本：接口与命令可能变动。安装包与 <code>SHA256SUMS</code> 都在
+          预发布版本：接口与命令可能变动；页面上的版本号由 <code>scripts/sync-site.sh</code>
+          在发布时自动同步。安装包与 <code>SHA256SUMS</code> 都在
           <a href="https://github.com/yxxbc/Seanbot/releases">GitHub Releases</a>；
-          装好后用 <code>sean update</code> 升级。
+          装好后用 <code>sean update</code> 升级，不必回官网。
         </p>
       </div>
     </div>
@@ -264,8 +281,8 @@
       <ol class="feature-list">
         <li>
           <span class="feature-list__idx">01</span>
-          <h3>八个内置工具</h3>
-          <p><code>read</code> <code>edit</code> <code>bash</code> <code>search</code> <code>perceive</code> <code>web_search</code> <code>web_fetch</code> <code>config</code>——读改跑查一条龙，命令受黑名单约束，上限与配置交给 <code>config</code>。</p>
+          <h3>工具箱够用</h3>
+          <p>内核 <code>read</code> <code>edit</code> <code>bash</code> <code>search</code> <code>perceive</code>；联网 <code>web_search</code> <code>web_fetch</code>；知识库 <code>kb_*</code>；技能 <code>skill</code>；上限与默认值交给 <code>config</code>。命令受黑名单约束，上限写在 <code>config.toml</code> 里随时可调。</p>
         </li>
         <li>
           <span class="feature-list__idx">02</span>
@@ -275,7 +292,7 @@
         <li>
           <span class="feature-list__idx">03</span>
           <h3>改动前先问你</h3>
-          <p>确认模式下 <code>edit</code> 与 <code>bash</code> 逐次征求许可，也能一键 YOLO；黑名单在任何模式下都生效。</p>
+          <p>确认模式下改动类工具逐次征求许可（<code>edit</code>、<code>bash</code>，以及 <code>config</code> 的 set/unset），也能一键 YOLO；黑名单在任何模式下都生效。</p>
         </li>
         <li>
           <span class="feature-list__idx">04</span>
@@ -285,12 +302,22 @@
         <li>
           <span class="feature-list__idx">05</span>
           <h3>自己升级自己</h3>
-          <p><code>sean update</code> 查最新版、下载对应平台的包、校验 SHA256 后原地替换。</p>
+          <p><code>sean update</code> 查最新版、下载对应平台的包、校验 SHA256 后原地替换（Windows 重跑安装命令）；不用回官网手动下载。</p>
         </li>
         <li>
           <span class="feature-list__idx">06</span>
           <h3>换厂商只是加一条描述</h3>
           <p>厂商层数据驱动，内置 DeepSeek；任何 OpenAI 兼容服务加一条描述即可接入。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">07</span>
+          <h3>懂你的项目</h3>
+          <p>会话开始自动注入项目指令（<code>AGENTS.md</code> / <code>CLAUDE.md</code>，从全局到工作目录逐级取，越近的越优先）；走到子目录再按需补该目录的约定。技能放 <code>.seanbot/skills/</code>，只在需要时读全文，不占常驻上下文。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">08</span>
+          <h3>自带知识库</h3>
+          <p>官方知识库随二进制分发、只读；外置知识库可写。Sean 用 <code>kb_search</code> 查自己的文档、用 <code>kb_add</code> 记长期事实；你也能 <code>sean kb</code> 看条目、<code>sean kb update</code> 拉最新。</p>
         </li>
       </ol>
     </div>
@@ -305,11 +332,11 @@
     <div class="status-grid">
       <div class="status-card">
         <div class="status-card__top"><span class="pill">可用</span><span class="status-card__name">CLI</span></div>
-        <p>终端里的逐行对话，五个平台（macOS / Linux / Windows）的发布包已经能装。</p>
+        <p>终端里的逐行对话：五个构建目标（macOS / Linux / Windows）的安装包都已就绪（预发布）。一行命令安装，<code>sean update</code> 一键升级。</p>
       </div>
       <div class="status-card">
-        <div class="status-card__top"><span class="pill pill--pre">预发布</span><span class="status-card__name">TUI</span></div>
-        <p>ratatui 全屏界面：斜杠命令浮窗、工具确认、Markdown 渲染、全屏转录视图。</p>
+        <div class="status-card__top"><span class="pill pill--wip">开发中</span><span class="status-card__name">TUI</span></div>
+        <p>ratatui 全屏界面还没落地。斜杠命令、工具确认与 Markdown 渲染现在已经在 CLI 里可用，等 TUI 出来再一起换。</p>
       </div>
       <div class="status-card">
         <div class="status-card__top"><span class="pill pill--wip">开发中</span><span class="status-card__name">App</span></div>

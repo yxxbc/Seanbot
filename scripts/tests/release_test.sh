@@ -11,7 +11,7 @@ TODAY="$(date +%Y-%m-%d)"
 new_repo() { # 目录 [未发布内容]
   local repo="$1" unreleased="${2-- 新功能 A}"
   mkdir -p "$repo/scripts" "$repo/a/src"
-  cp "$ROOT/scripts/release.sh" "$ROOT/scripts/cargo-version.sh" "$ROOT/scripts/changelog-section.sh" "$repo/scripts/"
+  cp "$ROOT/scripts/release.sh" "$ROOT/scripts/cargo-version.sh" "$ROOT/scripts/changelog-section.sh" "$ROOT/scripts/sync-site.sh" "$repo/scripts/"
   cat > "$repo/Cargo.toml" <<'TOML'
 [workspace]
 resolver = "3"

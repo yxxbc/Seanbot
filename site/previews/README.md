@@ -20,5 +20,8 @@
 
 ## 还要补的素材
 
-- `site/assets/og.png`：1200×630 的社交分享卡片，接好后把 `site/index.html` 里
-  `og:image` 的 `assets/icon.svg` 换成 `assets/og.png`。
+- `site/assets/og.png`：分享卡片，**已就绪**（1200×630，由 `scripts/make-og.py` 生成）。
+  改文案后重跑一次：`python3 scripts/make-og.py`（需要 Python 3 + Pillow）。
+- `site/previews/cli.png`、`tui.png`、`app.png`：真实截图还没补，页面会显示「预览图正在补充」。
+- `site/assets/version.json`：不用手改，由 `scripts/sync-site.sh` 在发布（`scripts/release.sh`）
+  与部署（`.github/workflows/pages.yml`）时自动写入当前版本与发布日期。
