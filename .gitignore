@@ -37,6 +37,11 @@ tmp/
 docs/Seanbot/
 docs/superpowers/
 
+# ===== 本地 agent 工具配置（各自 clone 自己装，不入库）=====
+.claude/
+.agents/
+skills-lock.json
+
 # ==== 测试agent时产生的jsonl文件 ====
 trace.jsonl
 
