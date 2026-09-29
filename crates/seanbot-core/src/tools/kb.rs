@@ -179,23 +179,27 @@ impl Tool for KbAddTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let (_, custom) = dirs(ctx)?;
+        let (builtin, custom) = dirs(ctx)?;
         let name = str_arg(&args, "name")?;
         let content = str_arg(&args, "content")?;
         if content.trim().is_empty() {
             return Err(ToolError::InvalidArgs("content 不能为空".into()));
         }
         let overwrite = opt_bool(&args, "overwrite")?.unwrap_or(false);
+        let clash = kb::has_entry(&builtin, name);
         let path = kb::write_custom(&custom, name, content, overwrite).map_err(kb_err)?;
         let entry = relative_name(&custom, &path);
-        Ok(out(
-            format!(
-                "已写入外置知识库条目 {entry}（{} 行）\n路径：{}",
-                content.lines().count(),
-                path.display()
-            ),
-            &format!("kb_add {entry}"),
-        ))
+        let mut message = format!(
+            "已写入外置知识库条目 {entry}（{} 行）\n路径：{}",
+            content.lines().count(),
+            path.display()
+        );
+        if clash {
+            message.push_str(
+                "\n注意：内置知识库里已有同名条目，两条会并存（kb_search 结果里用 [内置] / [外置] 区分）",
+            );
+        }
+        Ok(out(message, &format!("kb_add {entry}")))
     }
 }
 
@@ -233,7 +237,7 @@ impl Tool for KbEditTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-        let (_, custom) = dirs(ctx)?;
+        let (builtin, custom) = dirs(ctx)?;
         let name = str_arg(&args, "name")?;
         let old = str_arg(&args, "old_string")?;
         let new = str_arg(&args, "new_string")?;
@@ -245,7 +249,16 @@ impl Tool for KbEditTool {
             ));
         }
 
-        let (path, text) = kb::read_custom(&custom, name).map_err(kb_err)?;
+        let (path, text) = match kb::read_custom(&custom, name) {
+            Ok(found) => found,
+            // 名字在外置库里没有、但内置库里有：说清为什么不能改，别只报"条目不存在"
+            Err(kb::KbError::NotFound(_)) if kb::has_entry(&builtin, name) => {
+                return Err(ToolError::Failed(format!(
+                    "{name} 是内置知识库的条目（官方维护、只读），kb_edit 只能改外置知识库。要改官方内容：改仓库 kb/ 下的文件，发布后再执行 kb_update；要记自己的内容：用 kb_add 写进外置知识库（两条会并存，kb_search 用 [内置]/[外置] 区分）"
+                )));
+            }
+            Err(other) => return Err(kb_err(other)),
+        };
         let label = relative_name(&custom, &path);
         let plan = plan_edit(&label, &text, old, new, replace_all, occurrence)
             .map_err(ToolError::Failed)?;
@@ -275,7 +288,7 @@ impl Tool for KbUpdateTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "kb_update".into(),
-            description: "把内置知识库更新到最新（等价于用户运行 sean kb update）：从官方地址取回索引与条目，只覆盖内容有变化的文件，外置知识库不受影响。需要联网。".into(),
+            description: "把内置知识库更新到最新（等价于用户运行 sean kb update）：从官方地址取回索引与条目，只覆盖内容有变化的文件，外置知识库不受影响。需要联网。它只能从官方地址同步，不能写入任意内容。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {}
@@ -311,6 +324,56 @@ impl Tool for KbUpdateTool {
             lines.push(format!("- 移除 {name}"));
         }
         Ok(out(lines.join("\n"), &report.summary()))
+    }
+}
+
+#[cfg(test)]
+mod protection_tests {
+    use super::*;
+
+    fn setup() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ToolContext::new(dir.path().to_path_buf());
+        ctx.kb_builtin = Some(dir.path().join("kb"));
+        ctx.kb_custom = Some(dir.path().join("kb-custom"));
+        (dir, ctx)
+    }
+
+    async fn run(tool: &dyn Tool, ctx: &ToolContext, args: Value) -> Result<ToolOutput, ToolError> {
+        tool.call(args, ctx).await
+    }
+
+    /// 命中内置条目时要说明原因，不能只说"条目不存在"。
+    #[tokio::test]
+    async fn editing_a_builtin_entry_explains_why() {
+        let (_dir, ctx) = setup();
+        run(&KbListTool, &ctx, json!({})).await.unwrap(); // 触发释放
+
+        let err = run(
+            &KbEditTool,
+            &ctx,
+            json!({
+                "name": "AboutSeanbot/01-Seanbot.md",
+                "old_string": "# what is Seanbot?",
+                "new_string": "# x"
+            }),
+        )
+        .await
+        .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("内置知识库"), "{text}");
+        assert!(text.contains("kb_update"), "{text}");
+        assert!(!text.contains("条目不存在"), "{text}");
+
+        // 往外置库写同名条目是允许的，但要提示两条会并存
+        let out = run(
+            &KbAddTool,
+            &ctx,
+            json!({"name": "AboutSeanbot/01-Seanbot.md", "content": "# 我的版本\n"}),
+        )
+        .await
+        .unwrap();
+        assert!(out.content.contains("并存"), "{}", out.content);
     }
 }
 

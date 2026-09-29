@@ -20,7 +20,7 @@ use crate::config;
 
 include!(concat!(env!("OUT_DIR"), "/kb_embedded.rs"));
 
-/// 远程索引与本地状态文件同名：它就是"最近一次应用成功的内置条目清单"。
+/// 远程索引与本地各存一份：它就是"最近一次应用成功的内置条目清单"。
 const INDEX_FILE: &str = "index.json";
 /// 知识库条目只支持 markdown。
 const ENTRY_EXT: &str = "md";
@@ -249,6 +249,13 @@ pub fn search(
         }
     }
     Ok(hits)
+}
+
+/// 目录里是否已经有这个条目（名字先做语法校验，不合法就当没有）。
+pub fn has_entry(dir: &Path, name: &str) -> bool {
+    entry_path(dir, name)
+        .map(|path| path.is_file())
+        .unwrap_or(false)
 }
 
 /// 读一个外置条目（内置条目用 read 工具直接读文件即可）。

@@ -63,7 +63,7 @@ fn list(builtin: &Path, custom: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 从远程拉取内置知识库的最新内容。
+/// 从远程拉取内置知识库的最新内容：官方是什么，本地就同步成什么。
 async fn update(builtin: &Path, cfg: &Config) -> Result<()> {
     let url = kb::base_url(cfg);
     println!("从 {url} 更新内置知识库…");
