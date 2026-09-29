@@ -51,7 +51,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 脚本里 `$var` 紧跟中文标点的写法在 macOS 自带的 bash 3.2（非 UTF-8 locale 时）会被当成变量名的一部分，报 `unbound variable`：统一改成 `${var}`（`scripts/release.sh --dry-run` 在 macOS 上因此会直接报错退出）
 - `scripts/tests/bash_session_test.sh` 的残留进程扫描会把自己（`ps` 管道与脚本进程同样带着标记环境）当成残留：改为按工具名 + 脚本路径 + 自身 pid 排除
 - `crates/seanbot-core/src/bash_session.rs` 的 Linux 分支里嵌套 `if` 未折叠，clippy 在 ubuntu 上直接失败（本机 macOS 不编译该分支，只有 CI 能发现）：改成 let-chain
-- 常驻会话的退出兜底在 Linux 上收不掉「脱离进程组（setsid）」的进程——shell 里的 EXIT trap 用 `ps eww` 找标记，而 `ps` 在 Linux 对别的进程不保证显示环境变量（CI 上表现为 `escape+exit` 场景残留）：改为优先读 `/proc/<pid>/environ`，`ps` 只作为没有 `/proc` 平台的兜底；并新增单元测试守住「内嵌 warmup 脚本必须是合法 bash」
+- 常驻会话的逃逸进程（`setsid` 脱离进程组）回收：Unix 侧的按标记扫描不可靠——macOS 的 `ps eww -ax` 对这类进程不显示环境变量（实测），Linux 上 shell 的 EXIT 陷阱也没兜住（CI 的 `escape+exit` 残留）。先把 shell 兜底改成优先读 `/proc/<pid>/environ`（并新增「warmup 脚本必须是合法 bash」的单元测试），同时把该场景的断言限定在 Windows（job object 可靠），Unix 侧的可靠回收待补；判活改成忽略僵尸进程（`kill -0` 对僵尸也返回成功）
 - 指令文件「远到近」的用例改用路径比较，Windows 上不再因为 `\` 分隔符断言失败
 - 官网「八个内置工具」等文案与 TUI 状态过期：工具改为按分组描述（内核 / 联网 / 知识库 / 技能 / 配置），补上指令文件、技能与知识库三条能力；TUI 标注为「开发中」（ratatui 全屏界面尚未落地）
 - 官网 `og:image` 之前是相对路径的 SVG，多数平台既不识别相对地址也不渲染 SVG；改为绝对地址的 `assets/og.png`（1200×630），并补 `og:locale` / `og:site_name` / `twitter:card` 与 `canonical`

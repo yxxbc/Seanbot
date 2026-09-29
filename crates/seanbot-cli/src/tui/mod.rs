@@ -32,7 +32,7 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Paragraph, Widget},
 };
 use seanbot_core::{Agent, AgentEvent, config::Config};
 use tokio::sync::mpsc;
@@ -42,7 +42,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::{format, journal::Journal};
 
 /// 活动区高度（阶段 2c 会改成随内容动态变化）。
-const VIEWPORT_HEIGHT: u16 = 12;
+const MIN_VIEWPORT_HEIGHT: u16 = 4;
 /// 动画/重绘节拍。
 const TICK: Duration = Duration::from_millis(80);
 /// 连按两次 Ctrl+C 退出的时间窗。
@@ -190,10 +190,14 @@ impl Input {
 /// 界面状态。
 pub struct App {
     input: Input,
-    /// 已经写完的活动区内容（滚动区的一部分）
-    activity: Vec<Line<'static>>,
-    /// 正在流式输出的助手正文
-    streaming: String,
+    /// 待写进终端滚动区的行（写出去就从内存里丢掉）
+    pending: Vec<Line<'static>>,
+    /// 本轮助手正文的 Markdown 流式渲染器
+    markdown: Option<crate::markdown::Streaming>,
+    /// 还没冻结、留在活动区显示的尾部
+    tail: Vec<Line<'static>>,
+    /// 正文渲染宽度（终端列数）
+    width: u16,
     /// 状态栏左侧：模型 · 目录
     left: String,
     /// 状态栏右侧：确认模式 / YOLO
@@ -211,8 +215,10 @@ impl App {
         let left = format!("{model} · {}", shorten_home(cwd));
         Self {
             input: Input::default(),
-            activity: Vec::new(),
-            streaming: String::new(),
+            pending: Vec::new(),
+            markdown: None,
+            tail: Vec::new(),
+            width: 80,
             left,
             mode: mode_label(mode),
             hint: None,
@@ -338,11 +344,19 @@ impl App {
     pub fn on_agent_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::TextDelta(text) => {
-                self.streaming.push_str(&text);
-                self.flush_streaming();
+                if self.markdown.is_none() {
+                    let width = self.width as usize;
+                    self.markdown = Some(crate::markdown::Streaming::new(width));
+                }
+                if let Some(stream) = self.markdown.as_mut() {
+                    // 冻结的行写进滚动区，未完成的尾部留在活动区
+                    let frozen = stream.push(&text);
+                    self.pending.extend(frozen);
+                    self.tail = stream.tail();
+                }
             }
             AgentEvent::ToolStarted { title, name, .. } => {
-                self.flush_streaming();
+                self.flush_markdown();
                 let label = format::tool_label(&name, &title);
                 self.push_line(format!("⏳ {label}"));
             }
@@ -356,15 +370,15 @@ impl App {
                 self.push_line(format!("{mark} {summary} · {}", format::secs(elapsed)));
             }
             AgentEvent::TurnFinished { usage, steps } => {
-                self.flush_streaming();
+                self.flush_markdown();
                 self.push_line(format::usage_line(usage.as_ref(), steps));
             }
             AgentEvent::Cancelled => {
-                self.flush_streaming();
+                self.flush_markdown();
                 self.push_line("⎿ 已中断".to_string());
             }
             AgentEvent::Error(msg) => {
-                self.flush_streaming();
+                self.flush_markdown();
                 self.push_line(format!("✗ 错误：{msg}"));
             }
             _ => {}
@@ -373,57 +387,55 @@ impl App {
 
     /// 一轮开始/结束。
     pub fn turn_started(&mut self, prompt: &str) {
-        self.flush_streaming();
+        self.flush_markdown();
         self.push_line(format!("› {prompt}"));
         self.running = true;
     }
 
     pub fn turn_finished(&mut self) {
-        self.flush_streaming();
+        self.flush_markdown();
         self.running = false;
     }
 
-    /// 把流式正文按换行切进活动区（末尾不完整的行留在 streaming 里）。
-    fn flush_streaming(&mut self) {
-        while let Some(index) = self.streaming.find('\n') {
-            let line: String = self.streaming.drain(..=index).collect();
-            self.activity
-                .push(Line::from(line.trim_end_matches('\n').to_string()));
-        }
+    /// 结束本轮 Markdown 流式渲染：剩余内容交给滚动区，活动区清空尾部。
+    fn flush_markdown(&mut self) {
+        let Some(mut stream) = self.markdown.take() else {
+            self.tail.clear();
+            return;
+        };
+        self.pending.extend(stream.finish());
+        self.tail.clear();
     }
 
     fn push_line(&mut self, text: String) {
-        self.activity.push(Line::from(text));
+        self.pending.push(Line::from(text));
+    }
+
+    /// 取走待写进滚动区的行。
+    pub fn take_pending(&mut self) -> Vec<Line<'static>> {
+        std::mem::take(&mut self.pending)
+    }
+
+    /// 终端尺寸变化时更新渲染宽度。
+    pub fn set_width(&mut self, width: u16) {
+        self.width = width;
+    }
+
+    /// 活动区高度：流式尾部 + 输入行 + 状态栏，不超过终端高度一半。
+    pub fn desired_height(&self, term_height: u16) -> u16 {
+        let body = (self.tail.len() as u16).max(3);
+        let cap = (term_height / 2).max(4);
+        (body + 2).clamp(4, cap).min(term_height.max(4))
     }
 
     pub fn tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
     }
 
-    /// 活动区可见的最后几行（尾部还有正在流式的正文）。
-    fn visible(&self, height: usize) -> Vec<Line<'static>> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        let pending: Vec<Line<'static>> = if self.streaming.is_empty() {
-            Vec::new()
-        } else {
-            self.streaming
-                .lines()
-                .map(|line| Line::from(line.to_string()))
-                .collect()
-        };
-        let total = self.activity.len() + pending.len();
-        let skip = total.saturating_sub(height);
-        for (index, line) in self.activity.iter().enumerate() {
-            if index >= skip {
-                lines.push(line.clone());
-            }
-        }
-        lines.extend(
-            pending
-                .into_iter()
-                .skip(skip.saturating_sub(self.activity.len())),
-        );
-        lines
+    /// 活动区内容：还没冻结的流式尾部（只保留最后几行）。
+    fn activity_lines(&self, height: usize) -> Vec<Line<'static>> {
+        let skip = self.tail.len().saturating_sub(height);
+        self.tail.iter().skip(skip).cloned().collect()
     }
 
     fn input_line(&self) -> Line<'static> {
@@ -516,14 +528,29 @@ pub async fn run(
     let mut terminal = Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
-            viewport: Viewport::Inline(VIEWPORT_HEIGHT),
+            viewport: Viewport::Inline(MIN_VIEWPORT_HEIGHT),
         },
     )
     .context("初始化行内 TUI 失败")?;
+    let mut viewport_height = MIN_VIEWPORT_HEIGHT;
     let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(TICK);
 
     loop {
+        // 每次重绘前：更新宽度、按内容调整活动区高度、把冻结内容写进滚动区
+        let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        app.set_width(cols);
+        let desired = app.desired_height(rows);
+        if desired != viewport_height {
+            viewport_height = desired;
+            terminal = Terminal::with_options(
+                CrosstermBackend::new(io::stdout()),
+                TerminalOptions {
+                    viewport: Viewport::Inline(desired),
+                },
+            )?;
+        }
+        flush_scrollback(&mut terminal, &mut app)?;
         terminal.draw(|frame| app.draw(frame))?;
         let prompt = loop {
             tokio::select! {
@@ -538,6 +565,7 @@ pub async fn run(
                 Some(hint) = hint_rx.recv() => app.set_hint(hint),
                 _ = ticker.tick() => app.tick(),
             }
+            flush_scrollback(&mut terminal, &mut app)?;
             terminal.draw(|frame| app.draw(frame))?;
         };
         let Some(prompt) = prompt else {
@@ -554,6 +582,7 @@ pub async fn run(
         app.turn_started(&prompt);
         let mut turn = std::pin::pin!(agent.run_turn(prompt, tx, cancel.clone()));
         loop {
+            flush_scrollback(&mut terminal, &mut app)?;
             terminal.draw(|frame| app.draw(frame))?;
             tokio::select! {
                 result = &mut turn => {
