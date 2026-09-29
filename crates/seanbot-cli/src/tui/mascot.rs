@@ -224,49 +224,97 @@ impl Mascot {
 }
 
 /// 欢迎框（设计书 §4.5）：左侧环环，右侧版本 / 模型 / 目录 / 快捷键。
+///
+/// `width` 是终端可用列数：框宽跟着收窄（上限 48 列），**绝不会比终端宽**。
+/// 行内 TUI 里"行比终端宽"会被折行，而活动区的记账（冻结多少行、窗口取几行）
+/// 是按行数算的，折行会让账目对不上——最后一行会被挤出屏幕、看起来像丢了内容。
 pub fn welcome_lines(
     mascot: &Mascot,
     version: &str,
     model: &str,
     mode: &str,
     cwd: &str,
+    width: u16,
 ) -> Vec<Line<'static>> {
+    /// 欢迎框最宽 48 列（含左右边框）。
+    const BOX_MAX: usize = 48;
+    /// 还能画像素画的最小框宽：`"│ "` 两列 + 12 列像素画 + 至少几列文案。
+    const ART_MIN: usize = 2 + 12 + 4;
+    /// 比这还窄就连边框都放不下，退化成一行文字。
+    const TINY: usize = 8;
+
     let right = [
         format!("Seanbot v{version}"),
         format!("{model} · {mode}"),
         cwd.to_string(),
         "/ 查看命令 · ctrl+o 转录 · ctrl+c 退出".to_string(),
     ];
-    let art = mascot.lines();
-    // 总宽（含左右边框）：内容行 = "│ " + 12 列像素画 + 填充 + "│"
-    const BOX_WIDTH: usize = 48;
-    const PREFIX: usize = 2 + 12;
-    let frame_style = Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C));
-    let mut lines = vec![Line::from(Span::styled(
-        format!("┌{}┐", "─".repeat(BOX_WIDTH - 2)),
-        frame_style,
-    ))];
-    for (index, art_line) in art.iter().enumerate() {
-        let mut spans = vec![Span::styled("│ ", frame_style)];
-        spans.extend(art_line.spans.iter().cloned());
-        // 减 1 是右侧那一格边框：边框宽 - 前缀 - 右边框 = 留给文案与填充的列数
-        let budget = BOX_WIDTH - PREFIX - 1;
-        let tail = match right.get(index) {
-            // 按**显示宽度**裁：CJK 与 ⚡ 这类宽字符占两列，按字符数算会把边框撑歪
-            Some(text) => clip_width(&format!("  {text}"), budget),
-            None => String::new(),
-        };
-        let pad = budget.saturating_sub(UnicodeWidthStr::width(tail.as_str()));
-        spans.push(Span::raw(tail));
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.push(Span::styled("│", frame_style));
-        lines.push(Line::from(spans));
+    let available = usize::from(width).max(1);
+    let box_width = available.min(BOX_MAX);
+    if box_width < TINY {
+        return vec![Line::from(clip_width(
+            &format!("Seanbot v{version}"),
+            box_width,
+        ))];
     }
-    lines.push(Line::from(Span::styled(
-        format!("└{}┘", "─".repeat(BOX_WIDTH - 2)),
-        frame_style,
-    )));
+
+    let mut lines = vec![border('┌', '┐', box_width)];
+    if box_width >= ART_MIN {
+        for (index, art_line) in mascot.lines().iter().enumerate() {
+            let mut prefix = vec![Span::styled("│ ", frame_style())];
+            prefix.extend(art_line.spans.iter().cloned());
+            let tail = match right.get(index) {
+                Some(text) => format!("  {text}"),
+                None => String::new(),
+            };
+            lines.push(content_line(prefix, &tail, box_width));
+        }
+    } else {
+        // 窄终端：像素画放不下（会折行），改成纯文字，宽度仍然严丝合缝
+        for text in &right {
+            lines.push(content_line(
+                vec![Span::styled("│ ", frame_style())],
+                text,
+                box_width,
+            ));
+        }
+    }
+    lines.push(border('└', '┘', box_width));
     lines
+}
+
+/// 边框行的样式（金色）。
+fn frame_style() -> Style {
+    Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C))
+}
+
+/// 上下边框：宽度恰好 `box_width`。
+fn border(left: char, right: char, box_width: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            "{left}{}{right}",
+            "─".repeat(box_width.saturating_sub(2).max(1))
+        ),
+        frame_style(),
+    ))
+}
+
+/// 一行内容：前缀（边框 + 像素画）+ 文案 + 补位 + 右边框，宽度恰好 `box_width`。
+fn content_line(prefix: Vec<Span<'static>>, text: &str, box_width: usize) -> Line<'static> {
+    let prefix_width: usize = prefix
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum();
+    // 减 1 是右侧那一格边框：留给文案与填充的列数
+    let budget = box_width.saturating_sub(prefix_width + 1);
+    // 按**显示宽度**裁：CJK 与 ⚡ 这类宽字符占两列，按字符数算会把边框撑歪
+    let tail = clip_width(text, budget);
+    let pad = budget.saturating_sub(UnicodeWidthStr::width(tail.as_str()));
+    let mut spans = prefix;
+    spans.push(Span::raw(tail));
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled("│", frame_style()));
+    Line::from(spans)
 }
 
 /// 按显示宽度截断（超宽字符算两列），装不下就补省略号。
@@ -301,13 +349,57 @@ mod tests {
             ("⚡ YOLO", "~/proj"),
             ("确认模式", "~/一个很长的中文目录名/子目录/再一层"),
         ] {
-            let lines = welcome_lines(&mascot, "9.9.9", "deepseek-flash", mode, cwd);
+            let lines = welcome_lines(&mascot, "9.9.9", "deepseek-flash", mode, cwd, 80);
             let width = UnicodeWidthStr::width(lines[0].to_string().as_str());
             for line in &lines {
                 let got = UnicodeWidthStr::width(line.to_string().as_str());
                 assert_eq!(got, width, "每一行都要一样宽（{mode} / {cwd}）：{line:?}");
             }
         }
+    }
+
+    /// 回归（P0）：欢迎框绝不能比终端宽。
+    ///
+    /// 行内 TUI 的活动区按"行数"记账（冻结几行、窗口取几行），一条比终端宽的行
+    /// 会被折成两个屏幕行，账目对不上——最后一行会被挤出屏幕（看起来像丢了内容）。
+    #[test]
+    fn welcome_box_never_exceeds_the_terminal_width() {
+        let mascot = Mascot::new(Mood::Idle);
+        for width in [8u16, 12, 16, 20, 24, 40, 47, 48, 80, 200] {
+            let lines = welcome_lines(
+                &mascot,
+                "9.9.9",
+                "deepseek-flash",
+                "确认模式",
+                "~/proj",
+                width,
+            );
+            for line in &lines {
+                let got = UnicodeWidthStr::width(line.to_string().as_str());
+                assert!(
+                    got <= usize::from(width),
+                    "宽度 {width} 下这一行有 {got} 列：{line:?}"
+                );
+            }
+        }
+    }
+
+    /// 窄终端退化成纯文字（放不下像素画），但仍然带上版本与模型。
+    #[test]
+    fn narrow_terminal_drops_the_art_but_keeps_the_text() {
+        let mascot = Mascot::new(Mood::Idle);
+        // 16 列：`"│ "` + 12 列像素画 + 文案已经放不下，只能退化
+        let lines = welcome_lines(&mascot, "9.9.9", "deepseek-flash", "确认模式", "~/proj", 16);
+        let text = lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // 16 列放不下完整文案，会被裁成 "Seanbot v9.9…"，但版本与模型都得在
+        assert!(text.contains("Seanbot v9.9"), "{text}");
+        assert!(text.contains("deepseek"), "{text}");
+        assert!(!text.contains('▀'), "窄终端不该再画像素画：{text}");
+        assert_eq!(lines.len(), 6, "边框 + 4 行文字 + 边框");
     }
 
     fn text_of(lines: &[Line<'static>]) -> Vec<String> {
@@ -389,7 +481,7 @@ mod tests {
     #[test]
     fn welcome_box_carries_version_model_mode_and_cwd() {
         let mascot = Mascot::new(Mood::Idle);
-        let lines = welcome_lines(&mascot, "0.1.2", "deepseek-flash", "确认模式", "~/proj");
+        let lines = welcome_lines(&mascot, "0.1.2", "deepseek-flash", "确认模式", "~/proj", 80);
         let text = text_of(&lines).join("\n");
         for needle in [
             "Seanbot v0.1.2",

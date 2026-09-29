@@ -13,12 +13,16 @@ use std::{
 
 use async_trait::async_trait;
 use seanbot_core::{
-    Decision, PermissionHandler, PermissionMode, PermissionRequest, Risk, SharedRuntime, is_within,
+    Decision, PermissionHandler, PermissionMode, PermissionRequest, Risk, SharedRuntime, UserEvent,
+    is_within,
 };
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
 /// 一次待确认的请求 + 回传决定的通道。
+///
+/// 回传通道由**运行时**（主循环）持有：界面只发 `UserEvent::PermissionDecision`，
+/// 拿不到通道、也就不可能绕过运行时自己答。`Ask::split` 就是这条分界线。
 #[derive(Debug)]
 pub struct Ask {
     pub request: PermissionRequest,
@@ -27,6 +31,90 @@ pub struct Ask {
     pub rememberable: bool,
     /// 界面显示用的几行预览
     pub preview: Vec<String>,
+}
+
+/// 界面要显示的一次授权请求（不含回传通道）。
+#[derive(Debug, Clone)]
+pub struct AskView {
+    /// 回指用：答复时把工具名发回来，运行时才知道给哪次询问
+    pub tool: String,
+    pub request: PermissionRequest,
+    pub rememberable: bool,
+    pub preview: Vec<String>,
+}
+
+impl Ask {
+    /// 拆成"运行时持有的回传通道"和"界面要显示的部分"。
+    pub fn split(self) -> (oneshot::Sender<Decision>, AskView) {
+        let Ask {
+            request,
+            reply,
+            rememberable,
+            preview,
+        } = self;
+        let view = AskView {
+            tool: request.tool.clone(),
+            request,
+            rememberable,
+            preview,
+        };
+        (reply, view)
+    }
+}
+
+/// 运行时的"待答复"名单：内核在等哪几次授权。
+///
+/// 界面发来 `UserEvent::PermissionDecision` 后，由这里按**工具名**配对回传——
+/// 确认框还没点、内核已经换了工具时就不会答错（同一个工具按先后顺序配对）。
+/// 名单被丢掉（本轮结束/被取消/进程退出）时里面的通道随之关闭，内核按**拒绝**处理。
+#[derive(Default)]
+pub struct PendingAsks {
+    waiting: Vec<(String, oneshot::Sender<Decision>)>,
+}
+
+impl PendingAsks {
+    /// 记下一次正在等待的授权。
+    pub fn push(&mut self, tool: impl Into<String>, reply: oneshot::Sender<Decision>) {
+        self.waiting.push((tool.into(), reply));
+    }
+
+    /// 把界面的答复交给最早的那次同名询问。
+    ///
+    /// 返回 false 表示没有对应的询问（例如授权已经超时、或用户答的是上一轮的），
+    /// 调用方可以忽略——界面说什么都不该让内核状态跑偏。
+    pub fn resolve(&mut self, event: &UserEvent) -> bool {
+        let UserEvent::PermissionDecision {
+            tool,
+            allow,
+            reason,
+        } = event
+        else {
+            return false;
+        };
+        let Some(index) = self.waiting.iter().position(|(name, _)| name == tool) else {
+            return false;
+        };
+        let (_, reply) = self.waiting.remove(index);
+        let decision = if *allow {
+            Decision::AllowOnce
+        } else {
+            Decision::Deny {
+                reason: reason.clone(),
+            }
+        };
+        reply.send(decision).is_ok()
+    }
+
+    /// 还有几次询问没答复（运行时本身不需要，留给测试断言配对结果）。
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.waiting.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.waiting.is_empty()
+    }
 }
 
 /// 本会话记住的授权规则。
@@ -306,10 +394,12 @@ mod tests {
                 ))
                 .await
         });
-        let ask = rx.recv().await.expect("应当收到确认请求");
-        assert!(ask.rememberable, "bash 一律可以记住");
-        assert!(ask.preview[0].contains("cargo test"), "{:?}", ask.preview);
-        ask.reply.send(Decision::AllowSession).unwrap();
+        // 运行时拿到回传通道，界面只拿显示用的部分
+        let (reply, view) = rx.recv().await.expect("应当收到确认请求").split();
+        assert!(view.rememberable, "bash 一律可以记住");
+        assert!(view.preview[0].contains("cargo test"), "{:?}", view.preview);
+        assert_eq!(view.tool, "bash", "答复要靠工具名回指");
+        reply.send(Decision::AllowSession).unwrap();
         assert_eq!(asking.await.unwrap(), Decision::AllowSession);
     }
 
@@ -327,8 +417,77 @@ mod tests {
                 .await
         });
         let ask = rx.recv().await.expect("应当收到确认请求");
-        assert!(!ask.rememberable, "工作目录之外的 edit 不给不再询问");
-        drop(ask); // 模拟本轮被取消
+        let (reply, view) = ask.split();
+        assert!(!view.rememberable, "工作目录之外的 edit 不给不再询问");
+        drop(reply); // 模拟本轮被取消 / 待答复名单被丢弃
         assert_eq!(asking.await.unwrap(), Decision::Deny { reason: None });
+    }
+
+    fn decision(tool: &str, allow: bool, reason: Option<&str>) -> UserEvent {
+        UserEvent::PermissionDecision {
+            tool: tool.into(),
+            allow,
+            reason: reason.map(str::to_string),
+        }
+    }
+
+    /// 答复按**工具名**配对：同名的按先后顺序，没有对应询问的直接忽略。
+    #[tokio::test]
+    async fn answers_are_matched_to_the_asking_tool() {
+        let mut pending = PendingAsks::default();
+        let (bash_tx, bash_rx) = oneshot::channel();
+        let (edit_tx, edit_rx) = oneshot::channel();
+        pending.push("bash", bash_tx);
+        pending.push("edit", edit_tx);
+        assert_eq!(pending.len(), 2);
+
+        // 答的是 edit：只有 edit 那次询问被答复
+        assert!(pending.resolve(&decision("edit", false, Some("别动生产"))));
+        assert_eq!(
+            edit_rx.await.unwrap(),
+            Decision::Deny {
+                reason: Some("别动生产".into())
+            }
+        );
+        assert_eq!(pending.len(), 1, "答复过的不该再配对一次");
+
+        // 答的是没在等的工具：忽略，不报错
+        assert!(!pending.resolve(&decision("write", true, None)));
+        assert!(
+            !pending.resolve(&UserEvent::Cancel),
+            "取消不是授权答复，不该被当成答复"
+        );
+
+        assert!(pending.resolve(&decision("bash", true, None)));
+        assert_eq!(bash_rx.await.unwrap(), Decision::AllowOnce);
+        assert!(pending.is_empty());
+    }
+
+    /// 同一工具连续两次询问：先来先答。
+    #[tokio::test]
+    async fn same_tool_asks_are_answered_in_order() {
+        let mut pending = PendingAsks::default();
+        let (first_tx, first_rx) = oneshot::channel();
+        let (second_tx, second_rx) = oneshot::channel();
+        pending.push("bash", first_tx);
+        pending.push("bash", second_tx);
+
+        assert!(pending.resolve(&decision("bash", true, None)));
+        assert_eq!(first_rx.await.unwrap(), Decision::AllowOnce);
+        assert!(pending.resolve(&decision("bash", false, None)));
+        assert_eq!(second_rx.await.unwrap(), Decision::Deny { reason: None });
+    }
+
+    /// 名单被丢掉（本轮结束/取消/退出）→ 通道关闭 → 内核按拒绝处理。
+    #[tokio::test]
+    async fn dropping_the_pending_list_denies_everything() {
+        let mut pending = PendingAsks::default();
+        let (tx, rx) = oneshot::channel();
+        pending.push("bash", tx);
+        drop(pending);
+        assert_eq!(
+            rx.await.unwrap_or(Decision::Deny { reason: None }),
+            Decision::Deny { reason: None }
+        );
     }
 }
