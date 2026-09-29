@@ -22,6 +22,16 @@ use crate::{
 
 /// `Retry-After` 最长遵循 60 秒。
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
+/// 两次收到字节之间的最长间隔；DeepSeek 的保活注释会重置它。
+const READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+fn http_client(read_timeout: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(read_timeout)
+        .build()
+        .expect("构建 HTTP 客户端失败")
+}
 
 pub struct OpenAiCompat {
     info: ProviderInfo,
@@ -162,10 +172,7 @@ impl Drop for TraceCapture {
 
 impl OpenAiCompat {
     pub fn new(desc: &ProviderDescriptor, api_key: impl Into<String>) -> Self {
-        let http = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .build()
-            .expect("构建 HTTP 客户端失败");
+        let http = http_client(READ_TIMEOUT);
         Self {
             info: ProviderInfo {
                 id: desc.id.to_string(),
@@ -214,6 +221,12 @@ impl OpenAiCompat {
     /// 退避基数（第 n 次重试等待 base × 2^n）。测试中设为毫秒级。
     pub fn with_backoff_base(mut self, base: Duration) -> Self {
         self.backoff_base = base;
+        self
+    }
+
+    /// 读超时（测试中设为毫秒级）。
+    pub fn with_read_timeout(mut self, timeout: Duration) -> Self {
+        self.http = http_client(timeout);
         self
     }
 

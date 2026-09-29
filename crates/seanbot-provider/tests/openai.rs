@@ -255,3 +255,22 @@ async fn mid_stream_failure_is_not_retried() {
     assert_eq!(chunks[0], Ok(StreamChunk::TextDelta("半".into())));
     assert!(matches!(chunks[1], Err(ProviderError::Network(_))));
 }
+
+#[tokio::test]
+async fn stalled_response_hits_read_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(sse_response(sse(&[])).set_delay(Duration::from_millis(800)))
+        .mount(&server)
+        .await;
+    let p = provider(&server).with_read_timeout(Duration::from_millis(100));
+    let started = std::time::Instant::now();
+    let err = collect(&p).await.unwrap_err();
+    assert!(matches!(err, ProviderError::Network(_)), "{err:?}");
+    // 4 次尝试 × 100ms，远小于服务端的 800ms 延迟
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "{:?}",
+        started.elapsed()
+    );
+}
