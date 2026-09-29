@@ -3,7 +3,7 @@ mod render;
 mod repl;
 mod setup;
 
-use std::process::ExitCode;
+use std::{path::PathBuf, process::ExitCode};
 
 use clap::{Parser, Subcommand};
 
@@ -17,6 +17,10 @@ struct Cli {
     /// 临时覆盖本次使用的模型
     #[arg(long, global = true, value_name = "模型")]
     model: Option<String>,
+
+    /// 记录模型请求、响应与用量到 JSONL 文件（包含完整对话内容）
+    #[arg(long, value_name = "文件")]
+    trace: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -54,7 +58,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
         }
         None => {
             let cfg = setup::ensure_config().await?;
-            let mut agent = setup::build_agent(&cfg, cli.model.as_deref())?;
+            let mut agent = setup::build_agent(&cfg, cli.model.as_deref(), cli.trace.as_deref())?;
+            if let Some(path) = &cli.trace {
+                eprintln!("模型 trace 已启用：{}", path.display());
+            }
             match cli.prompt {
                 Some(prompt) => Ok(repl::run_once(&mut agent, &cfg, prompt).await),
                 None => {

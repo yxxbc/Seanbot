@@ -3,10 +3,16 @@
 pub(crate) mod request;
 pub(crate) mod sse;
 
-use std::time::Duration;
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    path::Path,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
-use futures::StreamExt;
+use futures::{StreamExt, stream};
 use serde_json::Value;
 
 use crate::{
@@ -25,6 +31,133 @@ pub struct OpenAiCompat {
     http: reqwest::Client,
     backoff_base: Duration,
     max_retries: u32,
+    trace: Option<Arc<Mutex<File>>>,
+}
+
+struct TraceCapture {
+    id: String,
+    request: Value,
+    file: Arc<Mutex<File>>,
+    started: Instant,
+    text: String,
+    reasoning: String,
+    tool_calls: Vec<Value>,
+    usage: Option<Value>,
+    finish_reason: Option<String>,
+    error: Option<String>,
+    finished: bool,
+}
+
+impl TraceCapture {
+    fn new(request: Value, file: Arc<Mutex<File>>) -> Self {
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        Self {
+            id: format!(
+                "{timestamp}-{}",
+                NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
+            request,
+            file,
+            started: Instant::now(),
+            text: String::new(),
+            reasoning: String::new(),
+            tool_calls: Vec::new(),
+            usage: None,
+            finish_reason: None,
+            error: None,
+            finished: false,
+        }
+    }
+
+    fn observe(&mut self, item: &Result<crate::StreamChunk, ProviderError>) {
+        match item {
+            Ok(crate::StreamChunk::TextDelta(text)) => self.text.push_str(text),
+            Ok(crate::StreamChunk::ReasoningDelta(text)) => self.reasoning.push_str(text),
+            Ok(crate::StreamChunk::ToolCall(call)) => self.tool_calls.push(serde_json::json!({
+                "id": call.id,
+                "name": call.name,
+                "arguments": call.arguments,
+            })),
+            Ok(crate::StreamChunk::Finished { reason, usage }) => {
+                self.finish_reason = Some(format!("{reason:?}"));
+                self.usage = usage.map(|usage| {
+                    serde_json::json!({
+                        "input_tokens": usage.input_tokens,
+                        "output_tokens": usage.output_tokens,
+                        "cache_hit_tokens": usage.cache_hit_tokens,
+                        "cache_miss_tokens": usage.cache_miss_tokens,
+                    })
+                });
+            }
+            Err(error) => self.error = Some(error.to_string()),
+        }
+    }
+
+    fn finish(&mut self, status: &str) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        let messages = self.request["messages"].as_array();
+        let mut context_chars = serde_json::Map::new();
+        if let Some(messages) = messages {
+            for message in messages {
+                let role = message["role"].as_str().unwrap_or("unknown");
+                let chars = message["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .chars()
+                    .count();
+                let entry = context_chars
+                    .entry(role.to_string())
+                    .or_insert(serde_json::json!(0));
+                *entry = serde_json::json!(entry.as_u64().unwrap_or_default() + chars as u64);
+            }
+        }
+        let request_bytes = serde_json::to_vec(&self.request).map_or(0, |bytes| bytes.len());
+        let record = serde_json::json!({
+            "id": self.id,
+            "status": status,
+            "elapsed_ms": self.started.elapsed().as_millis(),
+            "request": self.request,
+            "request_metrics": {
+                "serialized_body_bytes": request_bytes,
+                "message_count": messages.map_or(0, |items| items.len()),
+                "tool_count": self.request["tools"].as_array().map_or(0, |items| items.len()),
+                "context_chars_by_role": context_chars,
+                "tool_schema_bytes": serde_json::to_vec(&self.request["tools"])
+                    .map_or(0, |bytes| bytes.len()),
+            },
+            "response": {
+                "text": self.text,
+                "reasoning": self.reasoning,
+                "tool_calls": self.tool_calls,
+                "finish_reason": self.finish_reason,
+                "error": self.error,
+            },
+            "response_metrics": {
+                "text_chars": self.text.chars().count(),
+                "reasoning_chars": self.reasoning.chars().count(),
+                "tool_call_count": self.tool_calls.len(),
+            },
+            "usage": self.usage,
+        });
+        if let Ok(mut file) = self.file.lock() {
+            let _ = serde_json::to_writer(&mut *file, &record);
+            let _ = file.write_all(b"\n");
+            let _ = file.flush();
+        }
+    }
+}
+
+impl Drop for TraceCapture {
+    fn drop(&mut self) {
+        self.finish("interrupted");
+    }
 }
 
 impl OpenAiCompat {
@@ -44,7 +177,33 @@ impl OpenAiCompat {
             http,
             backoff_base: Duration::from_secs(1),
             max_retries: 3,
+            trace: None,
         }
+    }
+
+    pub fn with_trace(mut self, path: impl AsRef<Path>) -> io::Result<Self> {
+        let path = path.as_ref();
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent)?;
+        }
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
+        self.trace = Some(Arc::new(Mutex::new(file)));
+        Ok(self)
     }
 
     pub fn with_base_url(mut self, url: impl Into<String>) -> Self {
@@ -140,14 +299,51 @@ impl Provider for OpenAiCompat {
 
     async fn stream(&self, req: ChatRequest) -> Result<ChunkStream, ProviderError> {
         let body = request::build_body(&req, &self.quirks);
+        let mut capture = self
+            .trace
+            .as_ref()
+            .map(|file| TraceCapture::new(body.clone(), Arc::clone(file)));
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self
+        let response = self
             .send_with_retry(|| self.http.post(&url).bearer_auth(&self.api_key).json(&body))
-            .await?;
+            .await;
+        let resp = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if let Some(capture) = &mut capture {
+                    capture.error = Some(error.to_string());
+                    capture.finish("request_failed");
+                }
+                return Err(error);
+            }
+        };
         let bytes = resp.bytes_stream().map(|r| {
             r.map(|b| b.to_vec())
                 .map_err(|e| ProviderError::Network(e.to_string()))
         });
-        Ok(sse::decode_stream(bytes, self.quirks.reasoning_field))
+        let inner = sse::decode_stream(bytes, self.quirks.reasoning_field);
+        let traced = stream::unfold((inner, capture), |(mut inner, mut capture)| async move {
+            match inner.next().await {
+                Some(item) => {
+                    if let Some(capture) = &mut capture {
+                        capture.observe(&item);
+                    }
+                    Some((item, (inner, capture)))
+                }
+                None => {
+                    if let Some(mut capture) = capture.take() {
+                        let status = if capture.error.is_some() {
+                            "stream_failed"
+                        } else {
+                            "complete"
+                        };
+                        capture.finish(status);
+                    }
+                    None
+                }
+            }
+        })
+        .boxed();
+        Ok(traced)
     }
 }

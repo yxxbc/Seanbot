@@ -1,6 +1,7 @@
 //! 内置厂商描述。新增 OpenAI 兼容厂商只需加一条描述。
 
 use std::sync::Arc;
+use std::{io, path::Path};
 
 use crate::{ModelInfo, Provider, openai::OpenAiCompat};
 
@@ -81,6 +82,18 @@ pub fn model_info(id: &str, api_context_window: Option<u64>) -> ModelInfo {
 pub fn create(desc: &ProviderDescriptor, api_key: impl Into<String>) -> Arc<dyn Provider> {
     match desc.kind {
         ProviderKind::OpenAiCompat => Arc::new(OpenAiCompat::new(desc, api_key)),
+    }
+}
+
+pub fn create_traced(
+    desc: &ProviderDescriptor,
+    api_key: impl Into<String>,
+    path: impl AsRef<Path>,
+) -> io::Result<Arc<dyn Provider>> {
+    match desc.kind {
+        ProviderKind::OpenAiCompat => {
+            Ok(Arc::new(OpenAiCompat::new(desc, api_key).with_trace(path)?))
+        }
     }
 }
 

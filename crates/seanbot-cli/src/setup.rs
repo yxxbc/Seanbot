@@ -2,6 +2,7 @@
 
 use std::{
     io::{self, Write},
+    path::Path,
     sync::Arc,
 };
 
@@ -11,7 +12,8 @@ use seanbot_core::{
     config::{Config, config_path},
 };
 use seanbot_provider::{
-    ModelInfo, Provider, ProviderDescriptor, builtin_providers, create, find_provider,
+    ModelInfo, Provider, ProviderDescriptor, builtin_providers, create, create_traced,
+    find_provider,
 };
 
 use crate::format;
@@ -41,14 +43,21 @@ pub async fn ensure_config() -> anyhow::Result<Config> {
     wizard(cfg).await
 }
 
-pub fn provider_for(cfg: &Config) -> anyhow::Result<Arc<dyn Provider>> {
+pub fn provider_for(cfg: &Config, trace_path: Option<&Path>) -> anyhow::Result<Arc<dyn Provider>> {
     let desc = descriptor(cfg)?;
     let key = api_key(cfg, desc).ok_or_else(|| anyhow!("缺少 API key，请运行 `sean config`"))?;
-    Ok(create(desc, key))
+    match trace_path {
+        Some(path) => Ok(create_traced(desc, key, path)?),
+        None => Ok(create(desc, key)),
+    }
 }
 
-pub fn build_agent(cfg: &Config, model_override: Option<&str>) -> anyhow::Result<Agent> {
-    let provider = provider_for(cfg)?;
+pub fn build_agent(
+    cfg: &Config,
+    model_override: Option<&str>,
+    trace_path: Option<&Path>,
+) -> anyhow::Result<Agent> {
+    let provider = provider_for(cfg, trace_path)?;
     let model = model_override.unwrap_or(&cfg.model).to_string();
     let cwd = std::env::current_dir()?;
     Ok(Agent::new(
@@ -141,7 +150,7 @@ pub fn choose_model(models: &[ModelInfo], default: Option<usize>) -> io::Result<
 }
 
 pub async fn print_models(cfg: &Config) -> anyhow::Result<()> {
-    let models = provider_for(cfg)?.list_models().await?;
+    let models = provider_for(cfg, None)?.list_models().await?;
     for m in models {
         let mark = if m.id == cfg.model { "*" } else { " " };
         println!(

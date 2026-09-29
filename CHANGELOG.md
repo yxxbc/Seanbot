@@ -23,3 +23,8 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 内置工具 `read`、`edit`、`bash`、`search`；工具执行时显示转圈、计时与折叠预览
 - bash 命令黑名单，可在 `~/.seanbot/config.toml` 的 `[tools.bash] deny` 中调整
 - 每轮结束显示 token 用量与上下文缓存命中量；执行中按 Ctrl+C 可中断当前任务并继续对话
+- `--trace <文件>` 可选择记录模型实际请求体、响应、上下文长度分布、耗时与 token 用量的 JSONL 文件；文件权限为 `0600`
+
+### 修复
+
+- `Config` / `ProviderConfig` 的 `Debug` 输出对 `api_key` 打码，避免调试与日志中泄露明文密钥

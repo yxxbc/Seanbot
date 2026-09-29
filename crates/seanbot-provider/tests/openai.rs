@@ -116,6 +116,50 @@ async fn streams_text_reasoning_tool_calls_and_usage() {
 }
 
 #[tokio::test]
+async fn trace_records_wire_request_response_and_usage_without_auth() {
+    let server = MockServer::start().await;
+    let trace_dir = tempfile::tempdir().unwrap();
+    let trace_path = trace_dir.path().join("nested/trace.jsonl");
+    let body = sse(&[
+        json!({"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"stop"}]}),
+        json!({"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":4}}),
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer sk-test"))
+        .and(body_partial_json(json!({"model":"deepseek-flash","messages":[{"role":"system","content":"sys"},{"role":"user","content":"hi"}]})))
+        .respond_with(sse_response(body))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let traced = provider(&server).with_trace(&trace_path).unwrap();
+    collect(&traced).await.unwrap();
+
+    let line = std::fs::read_to_string(&trace_path).unwrap();
+    let record: Value = serde_json::from_str(line.trim()).unwrap();
+    assert_eq!(record["status"], "complete");
+    assert_eq!(record["request"]["messages"][1]["content"], "hi");
+    assert_eq!(record["response"]["text"], "answer");
+    assert_eq!(record["usage"]["input_tokens"], 12);
+    assert_eq!(record["usage"]["output_tokens"], 3);
+    assert_eq!(record["usage"]["cache_hit_tokens"], 8);
+    assert_eq!(
+        record["request_metrics"]["context_chars_by_role"]["user"],
+        2
+    );
+    assert!(!line.contains("sk-test"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&trace_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+}
+
+#[tokio::test]
 async fn auth_error_is_not_retried() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
