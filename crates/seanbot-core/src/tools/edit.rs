@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 
 use crate::tool::{
-    FileSnapshot, Risk, Tool, ToolContext, ToolError, ToolOutput, io_error, opt_bool, resolve_path,
-    str_arg,
+    FileSnapshot, Risk, Tool, ToolContext, ToolError, ToolOutput, io_error, opt_bool, opt_u64,
+    resolve_path, str_arg,
 };
 
 pub struct EditTool;
@@ -18,14 +18,15 @@ impl Tool for EditTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "edit".into(),
-            description: "精确替换文件中的文本。old_string 必须与文件内容逐字一致（含缩进与空白）且在文件中唯一出现；需要替换全部出现处时设置 replace_all。修改已有文件前必须先用 read 读取；文件内容没变时读一次即可连续编辑多次。old_string 为空字符串且文件不存在时新建文件（自动创建父目录），内容为 new_string。唯一性失败会列出每一处出现的行号；把 read 输出的行号前缀一起复制进来时会被自动忽略并在结果中说明。配置文件 config.toml 受保护，不能通过本工具修改（请用 config 工具或手动编辑）。".into(),
+            description: "精确替换文件中的文本。old_string 必须与文件内容逐字一致（含缩进与空白）；同一段文本出现多次时用 occurrence 指定替换第几处，或用 replace_all 全部替换。修改已有文件前必须先用 read 读取；文件内容没变时读一次即可连续编辑多次。old_string 为空字符串且文件不存在时新建文件（自动创建父目录），内容为 new_string。唯一性失败会列出每一处出现的行号；把 read 输出的行号前缀一起复制进来时会被自动忽略并在结果中说明。配置文件 config.toml 受保护，不能通过本工具修改（请用 config 工具或手动编辑）。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "文件路径"},
                     "old_string": {"type": "string", "description": "要被替换的原文；新建文件时传空字符串"},
                     "new_string": {"type": "string", "description": "替换后的内容"},
-                    "replace_all": {"type": "boolean", "description": "替换所有出现处，默认 false"}
+                    "replace_all": {"type": "boolean", "description": "替换所有出现处，默认 false"},
+                    "occurrence": {"type": "integer", "description": "替换第几处出现（从 1 开始）；同一段文本出现多次时用它精确指定，不能与 replace_all 同时使用"}
                 },
                 "required": ["path", "old_string", "new_string"]
             }),
@@ -56,6 +57,10 @@ impl Tool for EditTool {
             .get("replace_all")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let occurrence = match occurrence_arg(args) {
+            Ok(value) => value,
+            Err(e) => return Some(format!("（无法预览：{e}）")),
+        };
         if old.is_empty() {
             return Some(limit_preview(
                 new.lines().map(|l| format!("+ {l}")).collect(),
@@ -66,7 +71,7 @@ impl Tool for EditTool {
             Ok(c) => c,
             Err(e) => return Some(format!("（无法预览：{}）", io_error(raw, e))),
         };
-        match plan_edit(raw, &content, old, new, replace_all) {
+        match plan_edit(raw, &content, old, new, replace_all, occurrence) {
             Ok(plan) => Some(limit_preview(diff_stats(&content, &plan.updated).2)),
             Err(reason) => Some(format!("（无法预览：{reason}）")),
         }
@@ -77,6 +82,12 @@ impl Tool for EditTool {
         let old = str_arg(&args, "old_string")?;
         let new = str_arg(&args, "new_string")?;
         let replace_all = opt_bool(&args, "replace_all")?.unwrap_or(false);
+        let occurrence = occurrence_arg(&args)?;
+        if occurrence.is_some() && replace_all {
+            return Err(ToolError::InvalidArgs(
+                "occurrence 与 replace_all 不能同时使用".into(),
+            ));
+        }
         let path = resolve_path(&ctx.cwd, raw);
         // 配置文件受保护：内置工具不能改，只能用 config 工具或手动编辑
         if ctx.is_config_file(&path) {
@@ -111,7 +122,8 @@ impl Tool for EditTool {
             )));
         };
 
-        let plan = plan_edit(raw, &source, old, new, replace_all).map_err(ToolError::Failed)?;
+        let plan = plan_edit(raw, &source, old, new, replace_all, occurrence)
+            .map_err(ToolError::Failed)?;
         tokio::fs::write(&path, &plan.updated)
             .await
             .map_err(|e| io_error(raw, e))?;
@@ -151,8 +163,12 @@ fn plan_edit(
     old: &str,
     new: &str,
     replace_all: bool,
+    occurrence: Option<usize>,
 ) -> Result<EditPlan, String> {
     let mut notes = Vec::new();
+    if occurrence.is_some() && replace_all {
+        return Err("occurrence 与 replace_all 不能同时使用".into());
+    }
 
     // read 显示时去掉了 \r，模型给出的通常是 \n；两个方向都对齐到文件的实际换行符
     let (old_eol, new_eol, eol_note) = align_line_endings(content, old, new);
@@ -174,14 +190,35 @@ fn plan_edit(
     }
 
     if count == 0 {
-        return Err(attach_notes(
-            not_found_message(raw, content, &old_text),
-            &notes,
-        ));
+        return Err(not_found_message(raw));
     }
     if old_text == new_text {
         return Err("old_string 与 new_string 相同，无需修改".into());
     }
+
+    // occurrence：直接改第 N 处，不必为了唯一性去猜更长的锚点
+    if let Some(nth) = occurrence {
+        if nth == 0 {
+            return Err("occurrence 从 1 开始".into());
+        }
+        if nth > count {
+            return Err(format!(
+                "old_string 在 {raw} 中只出现 {count} 处（{}），无法替换第 {nth} 处",
+                line_hint(&occurrence_lines(content, &old_text))
+            ));
+        }
+        let (start, end) = nth_match_range(content, &old_text, nth).expect("已确认第 nth 处存在");
+        let mut replaced_at = String::with_capacity(content.len() + new_text.len());
+        replaced_at.push_str(&content[..start]);
+        replaced_at.push_str(&new_text);
+        replaced_at.push_str(&content[end..]);
+        return Ok(EditPlan {
+            updated: replaced_at,
+            replaced: 1,
+            notes,
+        });
+    }
+
     if count > 1 && !replace_all {
         return Err(ambiguous_message(raw, content, &old_text, count));
     }
@@ -291,172 +328,55 @@ fn is_read_footer(line: &str) -> bool {
     digits(total) && digits(start) && digits(end)
 }
 
-/// 逐行比较用的归一化函数。
-type LineNorm = fn(&str) -> String;
-
-/// old_string 没找到时，尽量说清"差在哪"，而不是只回一句未找到。
-fn not_found_message(raw: &str, content: &str, old: &str) -> String {
-    let variants: [(&str, LineNorm); 4] = [
-        ("行尾空白不同", |line: &str| {
-            line.trim_end().to_string()
-        }),
-        ("缩进宽度不同", normalize_indent),
-        ("空白差异（空格、TAB 或全角空格）", squash_whitespace),
-        ("换行符不同", |line: &str| line.replace('\r', "")),
-    ];
-    for (label, norm) in variants {
-        if let Some((start, len)) = locate(content, old, norm) {
-            let span = if len == 1 {
-                format!("第 {start} 行")
-            } else {
-                format!("第 {start}-{} 行", start + len - 1)
-            };
-            let mut message =
-                format!("old_string 在 {raw} 中未找到：{span}的内容与它一致，但{label}。");
-            let sample = sample_difference(content, old, start);
-            if !sample.is_empty() {
-                message.push('\n');
-                message.push_str(&sample);
-            }
-            message.push_str("\n请重新 read 后按文件里的实际内容重写 old_string。");
-            return message;
-        }
+/// `occurrence` 参数：替换第几处出现（从 1 开始）。
+fn occurrence_arg(args: &Value) -> Result<Option<usize>, ToolError> {
+    match opt_u64(args, "occurrence")? {
+        None => Ok(None),
+        Some(0) => Err(ToolError::InvalidArgs("occurrence 从 1 开始".into())),
+        Some(n) => usize::try_from(n)
+            .map(Some)
+            .map_err(|_| ToolError::InvalidArgs("occurrence 超出范围".into())),
     }
+}
 
-    // 整段对不上时退一步：只报告首行在哪
-    if let Some(first) = old.lines().find(|line| !line.trim().is_empty())
-        && let Some(line) = find_line(content, first)
-    {
-        return format!(
-            "old_string 在 {raw} 中未找到；它的首行 `{}` 出现在第 {line} 行，但整段与文件不符。\n请重新 read 后按文件的实际内容重写 old_string（不要带行号前缀）。",
-            clip(first.trim())
-        );
-    }
+/// old_string 没找到时只回一句：细节诊断会让模型反复琢磨空白，不如直接重读。
+fn not_found_message(raw: &str) -> String {
+    format!("old_string 在 {raw} 中未找到；请重新 read 后按文件的实际内容重写（注意空白与换行）")
+}
+
+/// old_string 有多处匹配时列出行号，并给出两条出路：occurrence 指定第几处，或 replace_all。
+fn ambiguous_message(raw: &str, content: &str, old: &str, count: usize) -> String {
     format!(
-        "old_string 在 {raw} 中未找到；请重新 read {raw} 并确认内容（含缩进与空白）与文件完全一致"
+        "old_string 在 {raw} 中出现 {count} 次（{}）；请用 occurrence 指定第几处，或设置 replace_all=true 全部替换",
+        line_hint(&occurrence_lines(content, old))
     )
 }
 
-/// old_string 有多处匹配时，列出每一处的行号与所在行，方便模型判断要补多少上下文。
-fn ambiguous_message(raw: &str, content: &str, old: &str, count: usize) -> String {
-    const SHOWN: usize = 5;
-    let mut message = format!("old_string 在 {raw} 中出现 {count} 次，无法确定改哪一处：");
-    for (line, text) in occurrences(content, old).into_iter().take(SHOWN) {
-        message.push_str(&format!("\n  第 {line} 行：{}", visible(&clip(&text))));
-    }
-    if count > SHOWN {
-        message.push_str(&format!("\n  …共 {count} 处"));
-    }
-    message
-        .push_str("\n请把 old_string 扩展到包含相邻行使其唯一，或设置 replace_all=true 替换全部");
-    message
-}
-
-/// 每次匹配的（起始行号，该行内容）。
-fn occurrences(content: &str, old: &str) -> Vec<(usize, String)> {
+/// 各处匹配的起始行号（从 1 开始）。
+fn occurrence_lines(content: &str, old: &str) -> Vec<usize> {
     content
         .match_indices(old)
-        .map(|(offset, _)| {
-            let line = content[..offset].matches('\n').count() + 1;
-            let text = content[offset..].lines().next().unwrap_or_default();
-            (line, text.to_string())
-        })
+        .map(|(offset, _)| content[..offset].matches('\n').count() + 1)
         .collect()
 }
 
-/// 按归一化后的逐行比较，找 old 出现在文件的哪几行；返回（起始行号，行数）。
-fn locate(content: &str, old: &str, norm: LineNorm) -> Option<(usize, usize)> {
-    let hay: Vec<String> = content.lines().map(norm).collect();
-    let needle: Vec<String> = old.lines().map(norm).collect();
-    if needle.is_empty() || needle.len() > hay.len() {
-        return None;
+/// 行号列表：`第 1、7、12 行`；超过 10 处只列前 10 个。
+fn line_hint(lines: &[usize]) -> String {
+    const SHOWN: usize = 10;
+    let head: Vec<String> = lines.iter().take(SHOWN).map(usize::to_string).collect();
+    if lines.len() > SHOWN {
+        format!("第 {}、… 行（共 {} 处）", head.join("、"), lines.len())
+    } else {
+        format!("第 {} 行", head.join("、"))
     }
-    (0..=hay.len() - needle.len())
-        .find(|&i| hay[i..i + needle.len()] == needle[..])
-        .map(|i| (i + 1, needle.len()))
 }
 
-/// 第一处不一致的样子，空白用 `·`（空格）与 `→`（TAB）显形。
-///
-/// 比较的是原始行：能走到这里说明归一化后双方一致，差异只可能出在空白上。
-fn sample_difference(content: &str, old: &str, start: usize) -> String {
-    let hay: Vec<&str> = content.lines().collect();
-    for (i, expected) in old.lines().enumerate() {
-        let Some(actual) = hay.get(start - 1 + i) else {
-            break;
-        };
-        // 比原始行：归一化后的内容按定义是相同的，看不出差在哪一行
-        if *actual != expected {
-            return format!(
-                "第 {} 行：文件是 `{}`，old_string 是 `{}`",
-                start + i,
-                visible(&clip(actual)),
-                visible(&clip(expected))
-            );
-        }
-    }
-    String::new()
-}
-
-/// 某一行（忽略行尾空白）在文件中的行号。
-fn find_line(content: &str, needle: &str) -> Option<usize> {
+/// 第 n 处匹配的字节范围（n 从 1 开始）。
+fn nth_match_range(content: &str, old: &str, nth: usize) -> Option<(usize, usize)> {
     content
-        .lines()
-        .position(|line| line == needle || line.trim_end() == needle.trim_end())
-        .map(|i| i + 1)
-}
-
-/// 全角空格等 Unicode 空白统一成半角，再去掉首尾空白、把连续空白压成一个空格。
-fn squash_whitespace(line: &str) -> String {
-    let mut out = String::new();
-    let mut pending_space = false;
-    for ch in line.chars() {
-        if ch.is_whitespace() {
-            pending_space = !out.is_empty();
-            continue;
-        }
-        if pending_space {
-            out.push(' ');
-            pending_space = false;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-/// 只比较缩进宽度：把每一行的前导空白压成一个 TAB，忽略正文里的空白差异。
-fn normalize_indent(line: &str) -> String {
-    let indent = line.len() - line.trim_start().len();
-    format!("\t{}", &line[indent..])
-}
-
-/// 把空白显形，避免模型看不出"看起来一样"的两行差在哪。
-fn visible(line: &str) -> String {
-    line.chars()
-        .map(|c| match c {
-            ' ' => '·',
-            '\t' => '→',
-            other => other,
-        })
-        .collect()
-}
-
-/// 截到便于放进错误信息的长度。
-fn clip(text: &str) -> String {
-    const MAX: usize = 60;
-    if text.chars().count() <= MAX {
-        return text.to_string();
-    }
-    let mut out: String = text.chars().take(MAX).collect();
-    out.push('…');
-    out
-}
-
-fn attach_notes(mut message: String, notes: &[String]) -> String {
-    for note in notes {
-        message.push_str(&format!("\n（{note}）"));
-    }
-    message
+        .match_indices(old)
+        .nth(nth - 1)
+        .map(|(start, matched)| (start, start + matched.len()))
 }
 
 const PREVIEW_LINES: usize = 20;
@@ -669,7 +589,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambiguous_match_lists_every_occurrence() {
+    async fn ambiguous_match_lists_lines_and_suggests_occurrence() {
         let (_dir, ctx) = setup("foo\nbar\nfoo\n");
         read(&ctx, "a.txt").await;
         let err = edit_error(
@@ -678,9 +598,10 @@ mod tests {
         )
         .await;
         assert!(err.contains("出现 2 次"), "{err}");
-        assert!(err.contains("第 1 行"), "{err}");
-        assert!(err.contains("第 3 行"), "{err}");
+        assert!(err.contains("第 1、3 行"), "{err}");
+        assert!(err.contains("occurrence"), "{err}");
         assert!(err.contains("replace_all"), "{err}");
+        assert_eq!(err.lines().count(), 1, "报错保持一行：{err}");
     }
 
     #[tokio::test]
@@ -761,7 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_match_reports_trailing_whitespace() {
+    async fn missing_match_keeps_one_short_line() {
         let (_dir, ctx) = setup("a  \nb\n");
         read(&ctx, "a.txt").await;
         let err = edit_error(
@@ -769,46 +690,100 @@ mod tests {
             json!({"path":"a.txt","old_string":"a\nb","new_string":"x"}),
         )
         .await;
-        assert!(err.contains("第 1-2 行"), "{err}");
-        assert!(err.contains("行尾空白"), "{err}");
-        assert!(err.contains("a··"), "应把空格显形：{err}");
+        assert!(err.contains("未找到"), "{err}");
+        assert!(err.contains("重新 read"), "{err}");
+        assert!(!err.contains("行尾空白"), "不再做空白差异诊断：{err}");
+        assert_eq!(err.lines().count(), 1, "报错保持一行：{err}");
     }
 
     #[tokio::test]
-    async fn missing_match_reports_full_width_space() {
-        let (_dir, ctx) = setup("a\u{3000}b\n");
+    async fn occurrence_replaces_the_requested_match() {
+        let (dir, ctx) = setup("foo\nbar\nfoo\nbaz\nfoo\n");
         read(&ctx, "a.txt").await;
-        let err = edit_error(
-            &ctx,
-            json!({"path":"a.txt","old_string":"a b","new_string":"x"}),
-        )
-        .await;
-        assert!(err.contains("第 1 行"), "{err}");
-        assert!(err.contains("空白"), "{err}");
+        let out = EditTool
+            .call(
+                json!({"path":"a.txt","old_string":"foo","new_string":"X","occurrence":2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(file(&dir, "a.txt"), "foo\nbar\nX\nbaz\nfoo\n");
+        assert_eq!(out.summary, "+1 -1 行");
+        // 读一次后可继续编辑；occurrence 每次都在当前内容上重新计数：
+        // 第一处已改成 X，此时第 2 处就是原来的第 3 处
+        EditTool
+            .call(
+                json!({"path":"a.txt","old_string":"foo","new_string":"Y","occurrence":2}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(file(&dir, "a.txt"), "foo\nbar\nX\nbaz\nY\n");
     }
 
     #[tokio::test]
-    async fn missing_match_reports_indent_difference() {
-        let (_dir, ctx) = setup("if x {\n\tbody\n}\n");
+    async fn occurrence_skips_the_uniqueness_requirement() {
+        let (dir, ctx) = setup("foo\nfoo\n");
         read(&ctx, "a.txt").await;
-        let err = edit_error(
-            &ctx,
-            json!({"path":"a.txt","old_string":"if x {\n    body\n}","new_string":"y"}),
-        )
-        .await;
-        assert!(err.contains("缩进"), "{err}");
+        EditTool
+            .call(
+                json!({"path":"a.txt","old_string":"foo","new_string":"1","occurrence":1}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(file(&dir, "a.txt"), "1\nfoo\n");
     }
 
     #[tokio::test]
-    async fn missing_match_falls_back_to_first_line_position() {
-        let (_dir, ctx) = setup("alpha\nbeta\n");
+    async fn occurrence_out_of_range_reports_lines() {
+        let (_dir, ctx) = setup("foo\nbar\nfoo\n");
         read(&ctx, "a.txt").await;
         let err = edit_error(
             &ctx,
-            json!({"path":"a.txt","old_string":"beta\ngamma","new_string":"x"}),
+            json!({"path":"a.txt","old_string":"foo","new_string":"x","occurrence":5}),
         )
         .await;
-        assert!(err.contains("首行 `beta` 出现在第 2 行"), "{err}");
+        assert!(err.contains("只出现 2 处"), "{err}");
+        assert!(err.contains("第 1、3 行"), "{err}");
+        assert!(err.contains("无法替换第 5 处"), "{err}");
+        assert_eq!(err.lines().count(), 1, "报错保持一行：{err}");
+    }
+
+    #[tokio::test]
+    async fn occurrence_rejects_zero_and_replace_all() {
+        let (dir, ctx) = setup("foo\n");
+        read(&ctx, "a.txt").await;
+        let err = EditTool
+            .call(
+                json!({"path":"a.txt","old_string":"foo","new_string":"x","occurrence":0}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("occurrence 从 1 开始"), "{err}");
+        let err = EditTool
+            .call(
+                json!({"path":"a.txt","old_string":"foo","new_string":"x","occurrence":1,"replace_all":true}),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgs(_)), "{err}");
+        assert!(err.to_string().contains("不能同时使用"), "{err}");
+        assert_eq!(file(&dir, "a.txt"), "foo\n");
+    }
+
+    #[tokio::test]
+    async fn occurrence_preview_matches_actual_edit() {
+        let (dir, ctx) = setup("foo\nbar\nfoo\n");
+        let args = json!({"path":"a.txt","old_string":"foo","new_string":"X","occurrence":2});
+        let preview = EditTool.preview(&args, &ctx).await.unwrap();
+        assert_eq!(preview, "- foo\n+ X");
+        read(&ctx, "a.txt").await;
+        let out = EditTool.call(args, &ctx).await.unwrap();
+        assert_eq!(out.preview.join("\n"), preview);
+        assert_eq!(file(&dir, "a.txt"), "foo\nbar\nX\n");
     }
 
     #[tokio::test]
