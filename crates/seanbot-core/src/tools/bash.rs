@@ -9,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use seanbot_provider::ToolSpec;
 use serde_json::{Value, json};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::{
     denylist::Denylist,
@@ -175,7 +175,24 @@ impl Tool for BashTool {
     }
 }
 
-/// 用指定解释器执行命令：边读边截断输出，超时或取消时结束整个进程组（Windows 为进程树）。
+/// 边读边截断一路输出管道，读到的字节追加进共享缓冲。
+fn spawn_capture_reader(
+    mut pipe: impl AsyncRead + Unpin + Send + 'static,
+    capture: Arc<Mutex<Capture>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut buf = vec![0u8; 8192];
+        loop {
+            match pipe.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => capture.lock().unwrap().push(&buf[..n]),
+            }
+        }
+    })
+}
+
+/// 用指定解释器执行命令：边读边截断输出（stdout 与 stderr 合并到同一缓冲），
+/// 超时或取消时结束整个进程组（Windows 为进程树）。
 pub(crate) async fn execute(
     interpreter: &Interpreter,
     command: &str,
@@ -186,7 +203,7 @@ pub(crate) async fn execute(
     cmd.current_dir(&ctx.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(unix)]
     cmd.process_group(0);
@@ -196,22 +213,15 @@ pub(crate) async fn execute(
         .spawn()
         .map_err(|e| ToolError::Failed(format!("无法启动 {}：{e}", interpreter.label())))?;
     let pid = child.id();
-    let mut stdout = child.stdout.take().expect("stdout 已设置为 piped");
+    let stdout = child.stdout.take().expect("stdout 已设置为 piped");
+    let stderr = child.stderr.take().expect("stderr 已设置为 piped");
 
-    // 边读边截断：内存占用有上限，超时或取消时也能拿到已有输出
+    // 边读边截断：内存占用有上限，超时或取消时也能拿到已有输出。
+    // stderr 单独接一份：bash 侧已用 exec 2>&1 合并，而 Windows PowerShell 5.1 会把
+    // 合并后的错误记录写回进程 stderr，只读 stdout 会整段丢掉输出。
     let capture = Arc::new(Mutex::new(Capture::default()));
-    let mut reader = {
-        let capture = capture.clone();
-        tokio::spawn(async move {
-            let mut buf = vec![0u8; 8192];
-            loop {
-                match stdout.read(&mut buf).await {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => capture.lock().unwrap().push(&buf[..n]),
-                }
-            }
-        })
-    };
+    let out_reader = spawn_capture_reader(stdout, capture.clone());
+    let err_reader = spawn_capture_reader(stderr, capture.clone());
 
     let ended = tokio::select! {
         status = child.wait() => Ended::Exited(status),
@@ -222,11 +232,13 @@ pub(crate) async fn execute(
         kill_group(pid);
     }
     // 后台子进程可能一直占着管道：只给一小段宽限期收尾，不等 EOF
-    if tokio::time::timeout(DRAIN_GRACE, &mut reader)
-        .await
-        .is_err()
-    {
-        reader.abort();
+    for mut reader in [out_reader, err_reader] {
+        if tokio::time::timeout(DRAIN_GRACE, &mut reader)
+            .await
+            .is_err()
+        {
+            reader.abort();
+        }
     }
     let text = capture.lock().unwrap().render();
     let body = text.trim_end();
@@ -374,6 +386,28 @@ mod tests {
         let out = run(&ctx, "echo bad; exit 3").await.unwrap();
         assert!(out.content.ends_with("[退出码 3]"));
         assert!(out.is_error);
+    }
+
+    #[tokio::test]
+    async fn stderr_is_merged_into_output() {
+        let (_d, ctx) = ctx();
+        // 工具承诺返回合并后的 stdout 与 stderr
+        let out = run(&ctx, "echo 出错信息 1>&2; exit 2").await.unwrap();
+        assert!(out.content.contains("出错信息"), "{}", out.content);
+        assert!(out.content.ends_with("[退出码 2]"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn capture_reader_appends_to_shared_buffer() {
+        use tokio::io::AsyncWriteExt;
+        let (mut tx, rx) = tokio::io::duplex(64);
+        let capture = Arc::new(Mutex::new(Capture::default()));
+        let reader = spawn_capture_reader(rx, capture.clone());
+        tx.write_all(b"hello ").await.unwrap();
+        tx.write_all(b"world").await.unwrap();
+        drop(tx);
+        reader.await.unwrap();
+        assert_eq!(capture.lock().unwrap().render(), "hello world");
     }
 
     #[tokio::test]
