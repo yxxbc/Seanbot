@@ -3,6 +3,7 @@
 pub mod config;
 mod registry;
 mod tool;
+pub mod tools;
 
 pub use registry::{RegistryError, ToolRegistry};
 pub use tool::{
