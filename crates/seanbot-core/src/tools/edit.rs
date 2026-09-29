@@ -41,6 +41,30 @@ impl Tool for EditTool {
             .to_string()
     }
 
+    async fn preview(&self, args: &Value, ctx: &ToolContext) -> Option<String> {
+        let raw = args.get("path")?.as_str()?;
+        let old = args.get("old_string")?.as_str()?;
+        let new = args.get("new_string")?.as_str()?;
+        let replace_all = args
+            .get("replace_all")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if old.is_empty() {
+            return Some(limit_preview(
+                new.lines().map(|l| format!("+ {l}")).collect(),
+            ));
+        }
+        let path = resolve_path(&ctx.cwd, raw);
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(e) => return Some(format!("（无法预览：{}）", io_error(raw, e))),
+        };
+        match plan_edit(raw, &content, old, new, replace_all) {
+            Ok((updated, _)) => Some(limit_preview(diff_stats(&content, &updated).2)),
+            Err(reason) => Some(format!("（无法预览：{reason}）")),
+        }
+    }
+
     async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let raw = str_arg(&args, "path")?;
         let old = str_arg(&args, "old_string")?;
@@ -73,34 +97,13 @@ impl Tool for EditTool {
         let content = tokio::fs::read_to_string(&path)
             .await
             .map_err(|e| io_error(raw, e))?;
-        // read 显示时去掉了 \r；CRLF 文件里把模型给出的 \n 还原成 \r\n
-        let (old, new) = if content.contains("\r\n") && !old.contains('\r') {
-            (old.replace('\n', "\r\n"), new.replace('\n', "\r\n"))
-        } else {
-            (old.to_string(), new.to_string())
-        };
-        let count = content.matches(old.as_str()).count();
-        if count == 0 {
-            return Err(ToolError::Failed(format!(
-                "old_string 在 {raw} 中未找到；请确认内容（含缩进与空白）与文件完全一致"
-            )));
-        }
-        if count > 1 && !replace_all {
-            return Err(ToolError::Failed(format!(
-                "old_string 在文件中出现 {count} 次，请提供更多上下文使其唯一，或设置 replace_all"
-            )));
-        }
-        let updated = if replace_all {
-            content.replace(old.as_str(), &new)
-        } else {
-            content.replacen(old.as_str(), &new, 1)
-        };
+        let (updated, replaced) =
+            plan_edit(raw, &content, old, new, replace_all).map_err(ToolError::Failed)?;
         tokio::fs::write(&path, &updated)
             .await
             .map_err(|e| io_error(raw, e))?;
         record_mtime(ctx, &path).await;
 
-        let replaced = if replace_all { count } else { 1 };
         let (added, removed, preview) = diff_stats(&content, &updated);
         Ok(ToolOutput {
             content: format!("已修改 {raw}（替换 {replaced} 处，+{added} -{removed} 行）"),
@@ -109,6 +112,51 @@ impl Tool for EditTool {
             is_error: false,
         })
     }
+}
+
+/// 计算替换结果：返回（新内容，替换次数）。与 `call` 共用，保证预览与实际一致。
+fn plan_edit(
+    raw: &str,
+    content: &str,
+    old: &str,
+    new: &str,
+    replace_all: bool,
+) -> Result<(String, usize), String> {
+    // read 显示时去掉了 \r；CRLF 文件里把模型给出的 \n 还原成 \r\n
+    let (old, new) = if content.contains("\r\n") && !old.contains('\r') {
+        (old.replace('\n', "\r\n"), new.replace('\n', "\r\n"))
+    } else {
+        (old.to_string(), new.to_string())
+    };
+    let count = content.matches(old.as_str()).count();
+    if count == 0 {
+        return Err(format!(
+            "old_string 在 {raw} 中未找到；请确认内容（含缩进与空白）与文件完全一致"
+        ));
+    }
+    if count > 1 && !replace_all {
+        return Err(format!(
+            "old_string 在文件中出现 {count} 次，请提供更多上下文使其唯一，或设置 replace_all"
+        ));
+    }
+    let updated = if replace_all {
+        content.replace(old.as_str(), &new)
+    } else {
+        content.replacen(old.as_str(), &new, 1)
+    };
+    Ok((updated, if replace_all { count } else { 1 }))
+}
+
+const PREVIEW_LINES: usize = 20;
+
+/// 把差异预览行限制在 20 行以内。
+fn limit_preview(lines: Vec<String>) -> String {
+    let total = lines.len();
+    let mut shown: Vec<String> = lines.into_iter().take(PREVIEW_LINES).collect();
+    if total > PREVIEW_LINES {
+        shown.push(format!("…（共 {total} 行变更）"));
+    }
+    shown.join("\n")
 }
 
 async fn create_file(
@@ -355,5 +403,56 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(file(&dir, "a.txt"), "x\r\ny\r\nc\r\n");
+    }
+
+    #[tokio::test]
+    async fn preview_matches_edit_without_writing() {
+        let (dir, ctx) = setup("a\nb\nc\n");
+        let args = json!({"path":"a.txt","old_string":"b\n","new_string":"B1\nB2\n"});
+        let preview = EditTool.preview(&args, &ctx).await.unwrap();
+        assert_eq!(preview, "- b\n+ B1\n+ B2");
+        assert_eq!(file(&dir, "a.txt"), "a\nb\nc\n", "预览不得修改文件");
+        // 与真正执行时的预览行一致
+        read(&ctx, "a.txt").await;
+        let out = EditTool.call(args, &ctx).await.unwrap();
+        assert_eq!(out.preview.join("\n"), preview);
+    }
+
+    #[tokio::test]
+    async fn preview_new_file_and_errors() {
+        let (_dir, ctx) = setup("x\n");
+        let p = EditTool
+            .preview(
+                &json!({"path":"n.txt","old_string":"","new_string":"1\n2\n"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(p, "+ 1\n+ 2");
+        let p = EditTool
+            .preview(
+                &json!({"path":"a.txt","old_string":"zzz","new_string":"y"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(p.starts_with("（无法预览：") && p.contains("未找到"), "{p}");
+        assert!(EditTool.preview(&json!({}), &ctx).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn preview_is_limited_to_20_lines() {
+        let (_dir, ctx) = setup("");
+        let body: String = (0..30).map(|i| format!("l{i}\n")).collect();
+        let p = EditTool
+            .preview(
+                &json!({"path":"big.txt","old_string":"","new_string":body}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let lines: Vec<_> = p.lines().collect();
+        assert_eq!(lines.len(), 21);
+        assert_eq!(lines[20], "…（共 30 行变更）");
     }
 }
