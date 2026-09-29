@@ -78,6 +78,7 @@ impl<W: Write> Renderer<W> {
         }
     }
 
+    #[cfg(test)]
     pub fn into_inner(self) -> W {
         self.out
     }
