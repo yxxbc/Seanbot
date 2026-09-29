@@ -54,7 +54,7 @@ impl Tool for WebSearchTool {
             .to_string()
     }
 
-    async fn call(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let query = str_arg(&args, "query")?.trim();
         if query.is_empty() {
             return Err(ToolError::InvalidArgs("query 不能为空".into()));
@@ -65,15 +65,16 @@ impl Tool for WebSearchTool {
         let language = opt_str(&args, "language")?
             .filter(|l| !l.trim().is_empty())
             .map(String::from);
-        let results = self
-            .backend
-            .search(&WebQuery {
-                query: query.to_string(),
-                max_results,
-                language,
-            })
-            .await
-            .map_err(|e| ToolError::Failed(e.to_string()))?;
+        // 联网请求最长 30 秒：用户中断时不能等它自己返回
+        let web_query = WebQuery {
+            query: query.to_string(),
+            max_results,
+            language,
+        };
+        let results = tokio::select! {
+            r = self.backend.search(&web_query) => r.map_err(|e| ToolError::Failed(e.to_string()))?,
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
+        };
         if results.is_empty() {
             return Ok(ToolOutput::new("没有找到相关结果", "0 条结果"));
         }
@@ -134,18 +135,17 @@ impl Tool for WebFetchTool {
             .to_string()
     }
 
-    async fn call(&self, args: Value, _ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
+    async fn call(&self, args: Value, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
         let url = str_arg(&args, "url")?.trim();
         let parsed = reqwest::Url::parse(url)
             .map_err(|_| ToolError::InvalidArgs(format!("网址无效：{url}")))?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err(ToolError::InvalidArgs("只支持 http/https 网址".into()));
         }
-        let page = self
-            .backend
-            .fetch(url)
-            .await
-            .map_err(|e| ToolError::Failed(e.to_string()))?;
+        let page = tokio::select! {
+            p = self.backend.fetch(url) => p.map_err(|e| ToolError::Failed(e.to_string()))?,
+            _ = ctx.cancel.cancelled() => return Err(ToolError::Cancelled),
+        };
         let total = page.content.chars().count();
         let body = if total > PAGE_CHARS {
             let head: String = page.content.chars().take(PAGE_CHARS).collect();
@@ -192,7 +192,10 @@ fn collapse(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::web::{WebError, WebPage, WebResult};
-    use std::sync::Mutex;
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
 
     /// 记录收到的查询并返回预设结果的假后端。
     #[derive(Default)]
@@ -200,12 +203,15 @@ mod tests {
         results: Vec<WebResult>,
         page: Option<WebPage>,
         error: Option<WebError>,
+        /// 模拟慢速服务：调用前先等待这么久
+        delay: Duration,
         queries: Mutex<Vec<WebQuery>>,
     }
 
     #[async_trait]
     impl WebBackend for FakeBackend {
         async fn search(&self, query: &WebQuery) -> Result<Vec<WebResult>, WebError> {
+            tokio::time::sleep(self.delay).await;
             self.queries.lock().unwrap().push(query.clone());
             match &self.error {
                 Some(e) => Err(e.clone()),
@@ -213,6 +219,7 @@ mod tests {
             }
         }
         async fn fetch(&self, url: &str) -> Result<WebPage, WebError> {
+            tokio::time::sleep(self.delay).await;
             match (&self.error, &self.page) {
                 (Some(e), _) => Err(e.clone()),
                 (None, Some(p)) => Ok(p.clone()),
@@ -363,5 +370,48 @@ mod tests {
                 "{url}"
             );
         }
+    }
+
+    /// 后端很慢时，取消应立刻结束调用，而不是等 30 秒超时。
+    #[tokio::test]
+    async fn search_honors_cancel() {
+        let tool = WebSearchTool::new(Arc::new(FakeBackend {
+            delay: Duration::from_secs(30),
+            ..Default::default()
+        }));
+        let ctx = ctx();
+        let token = ctx.cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            token.cancel();
+        });
+        let started = Instant::now();
+        let err = tool
+            .call(json!({"query": "慢查询"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Cancelled), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "取消未立即生效");
+    }
+
+    #[tokio::test]
+    async fn fetch_honors_cancel() {
+        let tool = WebFetchTool::new(Arc::new(FakeBackend {
+            delay: Duration::from_secs(30),
+            ..Default::default()
+        }));
+        let ctx = ctx();
+        let token = ctx.cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            token.cancel();
+        });
+        let started = Instant::now();
+        let err = tool
+            .call(json!({"url": "https://example.com/slow"}), &ctx)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ToolError::Cancelled), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5), "取消未立即生效");
     }
 }
