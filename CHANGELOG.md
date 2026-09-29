@@ -11,6 +11,8 @@ Seanbot 的所有重要变更都会记录在本文件中。
 
 ## [未发布]
 
+## [0.2.0] - 2026-09-29
+
 ### 新增
 
 - **行内 TUI（阶段 2a 骨架）**：`sean` 默认进入 ratatui 行内界面——raw mode + bracketed paste + panic 兜底还原终端、行内 viewport、单行输入框（光标移动/删除、Ctrl+A/E/U/C）、状态栏（模型 · 目录 · 确认模式/YOLO）、活动区实时显示助手流式正文与工具行；Ctrl+D 或连按两次 Ctrl+C 退出，Esc / Ctrl+C 中断本轮
