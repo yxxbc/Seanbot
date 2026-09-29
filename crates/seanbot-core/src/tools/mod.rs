@@ -1,6 +1,7 @@
 //! 内置工具。
 
 mod bash;
+mod bash_session;
 mod config;
 mod create_skill;
 mod edit;
@@ -13,6 +14,7 @@ mod web;
 
 pub use bash::BashTool;
 pub(crate) use bash::interpreter_label;
+pub use bash_session::BashSessionTool;
 pub use config::ConfigTool;
 pub use create_skill::CreateSkillTool;
 pub use edit::EditTool;
@@ -31,8 +33,9 @@ use crate::{config::Config, registry::ToolRegistry, tool::Tool};
 pub fn builtin_registry(config: &Config) -> ToolRegistry {
     let web = crate::web::backend_from_config(config);
     let mut registry = ToolRegistry::default();
-    let tools: [Arc<dyn Tool>; 15] = [
+    let tools: [Arc<dyn Tool>; 16] = [
         Arc::new(BashTool),
+        Arc::new(BashSessionTool),
         Arc::new(ConfigTool),
         Arc::new(CreateSkillTool),
         Arc::new(EditTool),
@@ -66,6 +69,7 @@ mod tests {
             names,
             [
                 "bash",
+                "bash_session",
                 "config",
                 "create_skill",
                 "edit",

@@ -51,6 +51,8 @@ pub struct Agent {
     reads: ReadTracker,
     /// 已注入过的子目录指令文件（换会话时清空）
     instructions: InjectedInstructions,
+    /// 常驻 bash 会话：程序退出前必须全部清理（Drop 里也有兜底）
+    bash_sessions: crate::bash_session::BashSessions,
     denylist: Denylist,
     cwd: PathBuf,
     /// 外部通过 `with_max_steps` 指定的上限；`None` 表示用配置里的 `agent.max_steps`
@@ -101,6 +103,7 @@ impl Agent {
     ) -> Self {
         let system = prompt::system_prompt(&prompt::PromptEnv::detect(&cwd));
         let denylist = Denylist::new(&config.tools.bash.deny);
+        let max_sessions = config.tools.bash.max_sessions.max(1);
         // 配置包成共享单元：`config` 工具写盘后同步内存，工具与步数上限立即读到新值
         let config = SharedConfig::new((*config).clone());
         let model = model.into();
@@ -114,6 +117,7 @@ impl Agent {
             permission,
             reads: ReadTracker::default(),
             instructions: InjectedInstructions::default(),
+            bash_sessions: crate::bash_session::BashSessions::new(max_sessions),
             denylist,
             cwd,
             max_steps: None,
@@ -168,6 +172,11 @@ impl Agent {
 
     pub fn system_prompt(&self) -> &str {
         &self.system
+    }
+
+    /// 关闭所有常驻 bash 会话。退出前显式调用一次，Drop 里还有兜底。
+    pub fn shutdown(&self) {
+        self.bash_sessions.shutdown();
     }
 
     /// 清空对话历史与读取记录；系统提示词保持不变。
@@ -435,6 +444,7 @@ impl Agent {
             cancel: cancel.child_token(),
             reads: self.reads.clone(),
             instructions: self.instructions.clone(),
+            bash_sessions: self.bash_sessions.clone(),
             config: self.config.clone(),
             config_path: crate::config::config_path().ok(),
             kb_builtin: crate::kb::builtin_dir().ok(),

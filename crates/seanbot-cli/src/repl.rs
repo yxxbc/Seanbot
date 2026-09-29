@@ -116,7 +116,10 @@ pub async fn run_once(
         RenderStyle::detect(cfg.ui.show_reasoning),
         Box::new(Instant::now),
     ));
-    if run_turn(agent, journal, &renderer, prompt).await {
+    let ok = run_turn(agent, journal, &renderer, prompt).await;
+    // 退出前把常驻 bash 会话全部关掉（内核 Drop 里还有兜底，这里是显式保证）
+    agent.shutdown();
+    if ok {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -206,6 +209,8 @@ pub async fn run(
         run_turn(agent, journal, &renderer, input).await;
     }
     let _ = editor.save_history(&history);
+    // 退出（/exit、Ctrl+D、出错）前关掉所有常驻 bash 会话，绝不留孤儿进程
+    agent.shutdown();
     Ok(())
 }
 

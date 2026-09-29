@@ -14,7 +14,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::{
     config,
     denylist::Denylist,
-    tool::{Risk, Tool, ToolContext, ToolError, ToolOutput, opt_u64, str_arg},
+    tool::{Risk, Tool, ToolContext, ToolError, ToolOutput, opt_str, opt_u64, str_arg},
 };
 
 const TITLE_CHARS: usize = 80;
@@ -154,12 +154,13 @@ impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bash".into(),
-            description: "在工作目录中执行 shell 命令（有 bash 时使用 bash，Windows 上无 Git Bash 时使用 PowerShell），返回合并后的 stdout 与 stderr 以及退出码。每次调用都是独立进程，不保留 cd 与环境变量；需要时用 && 串联。默认超时与输出长度上限来自配置（默认 120 秒、最多 600 秒、30000 字符），可用 timeout 调整（不超过配置上限），可用 config 工具查看或修改上限。输出超过上限时只保留首尾。部分危险命令被黑名单禁止。".into(),
+            description: "执行 shell 命令（有 bash 时使用 bash，Windows 上无 Git Bash 时使用 PowerShell），返回合并后的 stdout 与 stderr 以及退出码。不带 session 时每次都是独立进程，不保留 cd 与环境变量；带 session=<名字> 时在常驻会话里执行——同一个会话里 cd、export、函数定义都会保留，适合需要连续操作的场景（例如先 cd 进目录再跑一串命令）。常驻会话默认最多 8 个（配置 tools.bash.max_sessions），用完请用 bash_session close 关掉；命令超时或取消会自动关掉该会话。程序退出时会全部清理。命令超时与输出长度上限来自配置（默认 120 秒、最多 600 秒、30000 字符），可用 timeout 调整。部分危险命令被黑名单禁止。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "要执行的命令"},
-                    "timeout": {"type": "integer", "description": "超时秒数，默认与上限由配置决定（默认 120，最大 600）"}
+                    "timeout": {"type": "integer", "description": "超时秒数，默认与上限由配置决定（默认 120，最大 600）"},
+                    "session": {"type": "string", "description": "常驻会话名（1-32 个字符，小写字母/数字/-/_，以字母或数字开头）；省略则用一次性进程"}
                 },
                 "required": ["command"]
             }),
@@ -201,8 +202,70 @@ impl Tool for BashTool {
             .check(command)
             .map_err(ToolError::Failed)?;
 
+        let session = opt_str(&args, "session")?.unwrap_or("").trim().to_string();
+        if !session.is_empty() {
+            return run_in_session(&session, command, timeout, &limits, ctx).await;
+        }
+
         execute(&Interpreter::detect(), command, timeout, ctx).await
     }
+}
+
+/// 在常驻会话里执行：状态（cwd、环境变量、函数）跨调用保留。
+///
+/// 超时或取消都会关掉该会话（进程状态已不可信），不会留下后台进程。
+async fn run_in_session(
+    session: &str,
+    command: &str,
+    timeout: u64,
+    limits: &Limits,
+    ctx: &ToolContext,
+) -> Result<ToolOutput, ToolError> {
+    let output = ctx
+        .bash_sessions
+        .run(
+            session,
+            command,
+            Duration::from_secs(timeout),
+            limits.max_output,
+            &ctx.cancel,
+        )
+        .await
+        .map_err(|e| ToolError::Failed(e.to_string()))?;
+
+    if output.cancelled {
+        return Err(ToolError::Cancelled);
+    }
+
+    let mut content = output.output;
+    let mut is_error = false;
+    if output.timed_out {
+        is_error = true;
+        content.push_str(&format!(
+            "\n[命令执行超时（{timeout} 秒），已终止该会话的整个进程组；会话 {session} 已关闭，下次用它会重新创建]"
+        ));
+    } else if output.exit_code != Some(0) {
+        is_error = true;
+    }
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(&format!("（会话 {session} · 当前目录 {}）", output.cwd));
+
+    Ok(ToolOutput {
+        content,
+        summary: format!(
+            "会话 {session}{}",
+            match (output.timed_out, output.exit_code) {
+                (true, _) => " · 超时已关闭".to_string(),
+                (_, Some(0)) => String::new(),
+                (_, Some(code)) => format!(" · 退出码 {code}"),
+                _ => String::new(),
+            }
+        ),
+        preview: Vec::new(),
+        is_error,
+    })
 }
 
 /// 边读边截断一路输出管道，读到的字节追加进共享缓冲。

@@ -188,6 +188,8 @@ pub struct BashConfig {
     pub max_timeout: u64,
     /// 输出超过该字符数时只保留首尾各一半
     pub max_output: usize,
+    /// 常驻会话（bash 的 session 参数）最多能同时开几个
+    pub max_sessions: usize,
 }
 
 impl Default for BashConfig {
@@ -197,9 +199,13 @@ impl Default for BashConfig {
             default_timeout: 120,
             max_timeout: 600,
             max_output: 30_000,
+            max_sessions: DEFAULT_MAX_BASH_SESSIONS,
         }
     }
 }
+
+/// 常驻 bash 会话的默认上限：同时最多几个会话。
+pub const DEFAULT_MAX_BASH_SESSIONS: usize = 8;
 
 /// `read` 的默认读取量。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

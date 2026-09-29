@@ -13,6 +13,10 @@ Seanbot 的所有重要变更都会记录在本文件中。
 
 ### 新增
 
+- bash 常驻会话：`bash` 新增 `session` 参数，同一个会话里 `cd`、环境变量、函数都会保留，适合"先 cd 再跑一串命令"这类连续操作；不带 `session` 时仍是一次性进程，行为不变
+- 新工具 `bash_session`（`list` / `close` / `close_all`）管理常驻会话；`tools.bash.max_sessions`（默认 8）限制同时开几个，可用 `config` 工具调整
+- **退出必定清理，绝不留孤儿进程**：四层保证——CLI 每条退出路径显式 `shutdown()`、`BashSessions` 的 `Drop` 杀进程组、会话 shell 挂着 `trap 'kill 0' EXIT` 且 stdin 管道 EOF 时自杀（父进程被 SIGKILL 也生效）、每个会话独占进程组 `killpg(SIGKILL)` 连后台任务一起收；命令超时或取消直接关掉该会话
+- 清理验证脚本 `scripts/tests/bash_session_test.sh`：探针跑 drop / exit（跳过析构）/ closeall / timeout 四条退出路径，每个会话里都留一个 `sleep 300` 后台任务，最后按 pid 与进程标记双重扫描 `ps`，任何残留都判失败
 - 系统提示词外置到仓库根的 `prompt/`（`identity.md` / `environment.md` / `workflow.md`，用 `{{占位符}}` 填运行期值），编译期内嵌；改提示词只动 markdown、不动 Rust，并有测试兜住没被替换的占位符
 - 子目录指令按需注入：`read` / `edit` 访问子目录里的文件时，把它所在目录链上尚未注入过的 `AGENTS.md` / `CLAUDE.md` 随该次工具结果注入一次（同一个文件只注入一次），走到某个模块才看到该模块的约定
 - 技能区分官方与外置：官方技能随二进制分发（仓库 `skills/`，首次使用时释放到 `<数据目录>/skills-builtin`、只读），外置是项目 `<工作目录>/.seanbot/skills/` 与全局 `<数据目录>/skills/`；同名时按 项目 > 全局 > 官方 取优先级最高的，工具输出与提示词清单都标出来源

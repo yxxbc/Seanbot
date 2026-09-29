@@ -13,7 +13,7 @@ Seanbot 内核（seanbot-core）内置的四个基础工具，agent 通过它们
 
 执行本地命令。
 
-- 参数：`command`（必填）、`timeout?`
+- 参数：`command`（必填）、`timeout?`、`session?`
 - 行为：以 `bash -c` 执行（无 bash 时改用 `sh -c`）；工作目录为会话工作目录；默认超时 120 秒，上限 600 秒；超时或取消时杀掉整个进程组；stdout 与 stderr 合并；输出超过 30000 字符时保留首尾各 15000 并标注省略量；返回退出码。每次调用相互独立，不保留 shell 状态。
 - 安全：受 bash 黑名单约束，命中时不执行并返回"命令被黑名单拒绝"。默认拒绝 `rm`、`sudo`、`mkfs`（含 `mkfs.*`）、`dd`、`shutdown`、`reboot`、`chmod -R`、`git push --force`、`git push -f`，可在配置中增删。黑名单是护栏而非沙箱，不能拦截一切绕行写法。
 

@@ -136,6 +136,8 @@ pub struct ToolContext {
     pub data_dir: Option<PathBuf>,
     /// 本会话已注入的子目录指令（read/edit 访问子目录时按需注入，同一个文件只注入一次）
     pub instructions: InjectedInstructions,
+    /// 常驻 bash 会话（bash 的 session 参数）；退出时由 Agent 统一清理
+    pub bash_sessions: crate::bash_session::BashSessions,
     pub runtime: SharedRuntime,
 }
 
@@ -151,6 +153,7 @@ impl ToolContext {
             kb_custom: crate::kb::custom_dir().ok(),
             data_dir: crate::config::data_dir().ok(),
             instructions: InjectedInstructions::default(),
+            bash_sessions: crate::bash_session::BashSessions::default(),
             runtime: shared_runtime(RuntimeState::default()),
         }
     }

@@ -519,6 +519,7 @@ async fn request_prefix_is_stable_across_steps_and_turns() {
         names,
         [
             "bash",
+            "bash_session",
             "config",
             "create_skill",
             "edit",
