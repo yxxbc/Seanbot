@@ -70,7 +70,13 @@ impl Tool for ReadTool {
         let lines: Vec<&str> = text.lines().collect();
         let total = lines.len();
         if total == 0 {
-            return Ok(ToolOutput::new("(空文件)", "空文件"));
+            let mut out = String::from("(空文件)");
+            if let Some(extra) =
+                crate::instruction::render_block(&ctx.instructions.take_for(&path, &ctx.cwd))
+            {
+                out.push_str(&extra);
+            }
+            return Ok(ToolOutput::new(out, "空文件"));
         }
         if offset > total {
             return Err(ToolError::Failed(format!(
@@ -86,6 +92,12 @@ impl Tool for ReadTool {
             out.push_str(&format!(
                 "\n(文件共 {total} 行，本次显示第 {offset}-{end} 行)\n"
             ));
+        }
+        // 子目录里的指令文件随这次访问注入一次（工作目录自己的那份已在系统提示词里）
+        if let Some(extra) =
+            crate::instruction::render_block(&ctx.instructions.take_for(&path, &ctx.cwd))
+        {
+            out.push_str(&extra);
         }
         Ok(ToolOutput::new(
             out,
@@ -134,6 +146,38 @@ mod tests {
             .call(json!({"path": "config.toml.bak"}), &ctx)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn injects_nested_instructions_once() {
+        let (dir, ctx) = setup();
+        let sub = dir.path().join("crates/app");
+        std::fs::create_dir_all(sub.join("src")).unwrap();
+        std::fs::write(sub.join("AGENTS.md"), "只改这个模块，别动别的\n").unwrap();
+        std::fs::write(sub.join("src/lib.rs"), "fn main() {}\n").unwrap();
+
+        let out = ReadTool
+            .call(json!({"path": "crates/app/src/lib.rs"}), &ctx)
+            .await
+            .unwrap();
+        assert!(out.content.contains("# 目录指令"), "{}", out.content);
+        assert!(out.content.contains("别动别的"), "{}", out.content);
+        assert!(
+            out.content.contains("fn main"),
+            "正文也要在：{}",
+            out.content
+        );
+        assert!(out.summary.starts_with("读取"), "{}", out.summary);
+
+        let again = ReadTool
+            .call(json!({"path": "crates/app/src/lib.rs"}), &ctx)
+            .await
+            .unwrap();
+        assert!(
+            !again.content.contains("# 目录指令"),
+            "同一个文件只注入一次：{}",
+            again.content
+        );
     }
 
     #[tokio::test]

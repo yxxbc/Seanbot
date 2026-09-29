@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     config::SharedConfig,
+    instruction::InjectedInstructions,
     runtime::{RuntimeState, SharedRuntime, shared_runtime},
 };
 
@@ -133,6 +134,8 @@ pub struct ToolContext {
     pub kb_custom: Option<PathBuf>,
     /// 数据目录：技能、知识库等全局资源的根；`None` 表示取不到
     pub data_dir: Option<PathBuf>,
+    /// 本会话已注入的子目录指令（read/edit 访问子目录时按需注入，同一个文件只注入一次）
+    pub instructions: InjectedInstructions,
     pub runtime: SharedRuntime,
 }
 
@@ -147,6 +150,7 @@ impl ToolContext {
             kb_builtin: crate::kb::builtin_dir().ok(),
             kb_custom: crate::kb::custom_dir().ok(),
             data_dir: crate::config::data_dir().ok(),
+            instructions: InjectedInstructions::default(),
             runtime: shared_runtime(RuntimeState::default()),
         }
     }

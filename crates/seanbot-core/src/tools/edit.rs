@@ -147,6 +147,12 @@ impl Tool for EditTool {
         for note in &plan.notes {
             message.push_str(&format!("\n提示：{note}"));
         }
+        // 编辑子目录里的文件时，把它所在目录链上的指令文件注入一次
+        if let Some(extra) =
+            crate::instruction::render_block(&ctx.instructions.take_for(&path, &ctx.cwd))
+        {
+            message.push_str(&extra);
+        }
         Ok(ToolOutput {
             content: message,
             summary: format!("+{added} -{removed} 行"),
@@ -423,8 +429,14 @@ async fn create_file(
         .map_err(|e| io_error(raw, e))?;
     ctx.reads.record(path, FileSnapshot::of(content.as_bytes()));
     let lines = content.lines().count();
+    let mut message = format!("已新建 {raw}（{lines} 行）");
+    if let Some(extra) =
+        crate::instruction::render_block(&ctx.instructions.take_for(path, &ctx.cwd))
+    {
+        message.push_str(&extra);
+    }
     Ok(ToolOutput {
-        content: format!("已新建 {raw}（{lines} 行）"),
+        content: message,
         summary: format!("新建文件 +{lines} 行"),
         preview: content.lines().map(|l| format!("+ {l}")).collect(),
         is_error: false,

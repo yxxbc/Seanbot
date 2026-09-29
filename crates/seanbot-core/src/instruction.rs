@@ -8,6 +8,7 @@ use std::{
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 /// 一层目录里认的文件名，按优先级。
@@ -116,6 +117,82 @@ fn take_within(text: &str, budget: usize) -> (&str, bool) {
     (&text[..end], true)
 }
 
+/// 本会话已经注入过哪些目录的指令文件（同一个文件只注入一次，别反复塞上下文）。
+#[derive(Debug, Clone, Default)]
+pub struct InjectedInstructions {
+    inner: Arc<Mutex<HashSet<PathBuf>>>,
+}
+
+impl InjectedInstructions {
+    /// 取"这个文件所在目录（到工作目录之间）里尚未注入过"的指令文件，从远到近。
+    ///
+    /// 工作目录自己的那份已经在系统提示词里了，这里不重复；工作目录之外的路径直接跳过。
+    pub fn take_for(&self, file: &Path, cwd: &Path) -> Vec<InstructionFile> {
+        let mut dirs = Vec::new();
+        let mut current = file.parent().map(Path::to_path_buf);
+        while let Some(dir) = current {
+            if dir == cwd || !crate::tool::is_within(cwd, &dir) {
+                break;
+            }
+            dirs.push(dir.clone());
+            current = dir.parent().map(Path::to_path_buf);
+        }
+        dirs.reverse();
+
+        let mut taken = Vec::new();
+        let mut seen = self.inner.lock().unwrap();
+        for dir in dirs {
+            let Some(path) = first_in(&dir) else {
+                continue;
+            };
+            let key = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+            if !seen.insert(key) {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            let (content, truncated) = take_within(&text, MAX_TOTAL_BYTES);
+            taken.push(InstructionFile {
+                scope: Scope::Project,
+                path,
+                content: content.to_string(),
+                truncated,
+            });
+        }
+        taken
+    }
+
+    /// 换会话时清空（@BT@/new@BT@、@BT@/resume@BT@、@BT@/clear@BT@）。
+    pub fn clear(&self) {
+        self.inner.lock().unwrap().clear();
+    }
+}
+
+/// 把刚注入的目录指令渲染成一段工具结果文本。
+pub fn render_block(files: &[InstructionFile]) -> Option<String> {
+    if files.is_empty() {
+        return None;
+    }
+    let mut out = String::from(
+        "\n\n# 目录指令（随本次访问注入）\n以下文件来自你刚访问的目录，属于项目约定，优先照做；与安全护栏冲突时以护栏为准。\n",
+    );
+    for file in files {
+        out.push_str(&format!(
+            "\n## {}\n{}\n",
+            file.path.display(),
+            file.content.trim_end()
+        ));
+        if file.truncated {
+            out.push_str("（内容过长，已截断）\n");
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +200,47 @@ mod tests {
     fn write(path: &Path, content: &str) {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn nested_files_are_taken_once_from_far_to_near() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let inner = root.join("crates/app");
+        write(&root.join("crates/AGENTS.md"), "crates 层约定\n");
+        write(&inner.join("AGENTS.md"), "app 层约定\n");
+
+        let tracker = InjectedInstructions::default();
+        let taken = tracker.take_for(&inner.join("src/main.rs"), &root);
+        let names: Vec<String> = taken.iter().map(|f| f.path.display().to_string()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names[0].contains("crates/AGENTS.md"), "远的先来：{names:?}");
+        assert!(names[1].contains("app/AGENTS.md"), "{names:?}");
+
+        // 同一个文件只注入一次，哪怕换个文件再读
+        assert!(
+            tracker
+                .take_for(&inner.join("src/other.rs"), &root)
+                .is_empty()
+        );
+        // 工作目录自己的那份在系统提示词里，不在按需注入范围
+        assert!(tracker.take_for(&root.join("x.rs"), &root).is_empty());
+    }
+
+    #[test]
+    fn render_block_needs_files_and_shows_paths() {
+        assert!(render_block(&[]).is_none());
+        let block = render_block(&[InstructionFile {
+            scope: Scope::Project,
+            path: PathBuf::from("/p/crates/AGENTS.md"),
+            content: "只改这个 crate\n".into(),
+            truncated: false,
+        }])
+        .unwrap();
+        assert!(block.contains("# 目录指令"), "{block}");
+        assert!(block.contains("/p/crates/AGENTS.md"), "{block}");
+        assert!(block.contains("只改这个 crate"), "{block}");
+        assert!(block.contains("护栏"), "要写明不能覆盖安全规则：{block}");
     }
 
     #[test]

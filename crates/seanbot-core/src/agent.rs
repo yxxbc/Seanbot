@@ -18,6 +18,7 @@ use crate::{
     config::{Config, SharedConfig},
     denylist::Denylist,
     event::{AgentEvent, TurnSummary},
+    instruction::InjectedInstructions,
     permission::{Decision, PermissionHandler, PermissionRequest},
     prompt,
     registry::ToolRegistry,
@@ -48,6 +49,8 @@ pub struct Agent {
     config: SharedConfig,
     permission: Arc<dyn PermissionHandler>,
     reads: ReadTracker,
+    /// 已注入过的子目录指令文件（换会话时清空）
+    instructions: InjectedInstructions,
     denylist: Denylist,
     cwd: PathBuf,
     /// 外部通过 `with_max_steps` 指定的上限；`None` 表示用配置里的 `agent.max_steps`
@@ -110,6 +113,7 @@ impl Agent {
             config,
             permission,
             reads: ReadTracker::default(),
+            instructions: InjectedInstructions::default(),
             denylist,
             cwd,
             max_steps: None,
@@ -170,6 +174,7 @@ impl Agent {
     pub fn clear(&mut self) {
         self.history.clear();
         self.reads.clear();
+        self.instructions.clear();
     }
 
     /// 切换到另一段会话（`/resume`、`/new`）：连同系统提示词一起替换。
@@ -179,6 +184,7 @@ impl Agent {
         self.system = system;
         self.history = history;
         self.reads.clear();
+        self.instructions.clear();
     }
 
     pub async fn run_turn(
@@ -428,6 +434,7 @@ impl Agent {
             cwd: self.cwd.clone(),
             cancel: cancel.child_token(),
             reads: self.reads.clone(),
+            instructions: self.instructions.clone(),
             config: self.config.clone(),
             config_path: crate::config::config_path().ok(),
             kb_builtin: crate::kb::builtin_dir().ok(),
