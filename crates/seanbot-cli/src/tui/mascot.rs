@@ -186,6 +186,12 @@ impl Mascot {
             let top_row = out_row * 2;
             let bottom_row = top_row + 1;
             let mut spans: Vec<Span<'static>> = Vec::with_capacity(12);
+            // 出错时整体左右晃：用前导空格代替位移
+            if out_row > 0 {
+                for _ in 0..self.shake().max(0) {
+                    spans.push(Span::raw(" "));
+                }
+            }
             for col in 0..12 {
                 let top = self.pixel(top_row, col);
                 let bottom = self.pixel(bottom_row, col);

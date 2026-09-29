@@ -325,7 +325,7 @@ impl App {
             transcript: Vec::new(),
             tool_meta: HashMap::new(),
             transcript_view: transcript::View::default(),
-            mascot: mascot::Mascot::default(),
+            mascot: mascot::Mascot::new(mascot::Mood::Idle),
             welcome: true,
             cwd: cwd.to_string(),
             pending: Vec::new(),
