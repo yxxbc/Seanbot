@@ -68,6 +68,17 @@ impl Entry {
     }
 }
 
+/// 转录里的搜索状态。
+#[derive(Debug, Default)]
+pub struct Search {
+    /// 正在输入的关键字（None 表示没在搜索）
+    pub typing: Option<String>,
+    /// 已生效的关键字
+    pub query: String,
+    /// 当前是第几个匹配（1 基，只用于显示）
+    pub current: usize,
+}
+
 /// 转录视图的状态：选中项、展开集合、滚动位置。
 #[derive(Debug, Default)]
 pub struct View {
@@ -75,6 +86,8 @@ pub struct View {
     expanded: HashSet<usize>,
     /// 顶部行号（PgUp/PgDn 改它）
     pub offset: usize,
+    /// 搜索状态
+    pub search: Search,
 }
 
 impl View {
@@ -109,6 +122,39 @@ impl View {
         }
     }
 
+    /// 与关键字匹配的条目下标（关键字为空时没有匹配）。
+    pub fn matches(&self, entries: &[Entry]) -> Vec<usize> {
+        let query = self.search.query.to_lowercase();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry_matches(entry, &query))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// 跳到下一个/上一个匹配（循环）；返回是否跳成功。
+    pub fn jump(&mut self, entries: &[Entry], forward: bool) -> bool {
+        let matches = self.matches(entries);
+        if matches.is_empty() {
+            self.search.current = 0;
+            return false;
+        }
+        let position = matches.iter().position(|index| *index == self.selected);
+        let next = match (position, forward) {
+            (Some(position), true) => (position + 1) % matches.len(),
+            (Some(position), false) => (position + matches.len() - 1) % matches.len(),
+            (None, true) => 0,
+            (None, false) => matches.len() - 1,
+        };
+        self.selected = matches[next];
+        self.search.current = next + 1;
+        true
+    }
+
     /// 生成要显示的行，以及"第几行属于哪个条目"的映射（鼠标点击用）。
     pub fn rows(
         &mut self,
@@ -121,10 +167,15 @@ impl View {
         for (index, entry) in entries.iter().enumerate() {
             let selected = index == self.selected;
             let marker = if selected { "▸ " } else { "  " };
+            let hit = !self.search.query.is_empty()
+                && entry_matches(entry, &self.search.query.to_lowercase());
             let base = if selected {
                 Style::default()
                     .fg(Color::Rgb(0xE6, 0xB8, 0x5C))
                     .add_modifier(Modifier::BOLD)
+            } else if hit {
+                // 命中的条目给个青色调，方便扫
+                Style::default().fg(Color::Cyan)
             } else {
                 Style::default()
             };
@@ -174,6 +225,16 @@ impl View {
     }
 }
 
+/// 条目是否命中关键字（关键字已小写化）。
+fn entry_matches(entry: &Entry, query: &str) -> bool {
+    let haystack = format!(
+        "{}\n{}",
+        entry.label().to_lowercase(),
+        entry.body().unwrap_or_default().to_lowercase()
+    );
+    haystack.contains(query)
+}
+
 fn first_line(text: &str) -> String {
     let line = text.lines().next().unwrap_or_default().trim();
     let clipped: String = line.chars().take(80).collect();
@@ -218,6 +279,7 @@ async fn run(
         let view = app.transcript_view_mut();
         // 每帧重建"行 → 条目"映射，鼠标点击据此命中
         let (lines, last_map) = view.rows(&entries, area.width, height);
+        let footer = footer_text(app.transcript_view());
         terminal.draw(|frame| {
             let rows = Layout::vertical([
                 Constraint::Length(1),
@@ -228,7 +290,7 @@ async fn run(
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     format!(
-                        " 转录（{} 条）· ↑↓/j/k 移动 · Enter 展开收起 · Esc/q 返回 ",
+                        " 转录（{} 条）· ↑↓/j/k 移动 · Enter 展开收起 · / 搜索 · Esc/q 返回 ",
                         entries.len()
                     ),
                     Style::default()
@@ -248,7 +310,7 @@ async fn run(
             );
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
-                    " 选中项用 Enter 或鼠标点击展开；工具调用展开后是模型看到的完整结果",
+                    footer.clone(),
                     Style::default().fg(Color::DarkGray),
                 ))),
                 rows[2],
@@ -283,9 +345,55 @@ fn handle_event(
                 return false;
             }
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            // 搜索输入模式：先吃掉普通按键
+            if app.transcript_view().search.typing.is_some() {
+                let entries = app.transcript().to_vec();
+                match key.code {
+                    KeyCode::Enter => {
+                        let query = app
+                            .transcript_view_mut()
+                            .search
+                            .typing
+                            .take()
+                            .unwrap_or_default();
+                        if query.trim().is_empty() {
+                            app.transcript_view_mut().search.query.clear();
+                        } else {
+                            app.transcript_view_mut().search.query = query;
+                            app.transcript_view_mut().jump(&entries, true);
+                        }
+                    }
+                    KeyCode::Esc => {
+                        app.transcript_view_mut().search.typing = None;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(text) = app.transcript_view_mut().search.typing.as_mut() {
+                            text.pop();
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        if let Some(text) = app.transcript_view_mut().search.typing.as_mut() {
+                            text.push(c);
+                        }
+                    }
+                    _ => {}
+                }
+                return false;
+            }
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => return true,
                 KeyCode::Char('c') if ctrl => return true,
+                KeyCode::Char('/') => {
+                    app.transcript_view_mut().search.typing = Some(String::new());
+                }
+                KeyCode::Char('n') => {
+                    let entries = app.transcript().to_vec();
+                    app.transcript_view_mut().jump(&entries, true);
+                }
+                KeyCode::Char('N') => {
+                    let entries = app.transcript().to_vec();
+                    app.transcript_view_mut().jump(&entries, false);
+                }
                 KeyCode::Up | KeyCode::Char('k') => {
                     app.transcript_view_mut().move_selection(-1, len)
                 }
@@ -341,6 +449,20 @@ fn handle_mouse(mouse: MouseEvent, app: &mut crate::tui::App, map: &[Option<usiz
     }
 }
 
+/// 底部的提示行：搜索时显示输入框与匹配数，否则显示操作说明。
+fn footer_text(view: &View) -> String {
+    if let Some(typing) = &view.search.typing {
+        return format!(" 搜索：{typing}▏  （Enter 确认 · Esc 取消）");
+    }
+    if !view.search.query.is_empty() {
+        return format!(
+            " 搜索「{}」· 第 {} 个匹配 · n/N 跳转 · / 重新搜索 · Esc 返回",
+            view.search.query, view.search.current
+        );
+    }
+    " 选中项用 Enter 或鼠标点击展开；/ 搜索 · n/N 跳转 · Esc 返回".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -357,6 +479,65 @@ mod tests {
                 content: "running 3 tests\nall ok".into(),
             },
         ]
+    }
+
+    #[test]
+    fn search_finds_entries_and_jumps_cyclically() {
+        let entries = entries();
+        let mut view = View::default();
+        view.search.query = "all ok".into();
+        assert_eq!(
+            view.matches(&entries),
+            vec![2],
+            "工具结果正文也算进搜索范围"
+        );
+
+        // "看看"同时出现在用户消息与助手回复里
+        view.search.query = "看看".into();
+        assert_eq!(view.matches(&entries), vec![0, 1]);
+        view.selected = 0;
+        assert!(view.jump(&entries, true));
+        assert_eq!(view.selected, 1, "跳到下一个匹配");
+        assert!(view.jump(&entries, true));
+        assert_eq!(view.selected, 0, "到尾了循环回第一个");
+        assert!(view.jump(&entries, false));
+        assert_eq!(view.selected, 1, "反向跳回上一个");
+
+        // 只有一个匹配时，来回跳都是它
+        view.search.query = "好的".into();
+        view.selected = 0;
+        assert!(view.jump(&entries, true));
+        assert_eq!(view.selected, 1);
+        assert!(view.jump(&entries, true));
+        assert_eq!(view.selected, 1);
+
+        view.search.query = "没有这段文字".into();
+        assert!(!view.jump(&entries, true), "没有匹配时返回 false");
+        assert_eq!(view.search.current, 0);
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let entries = vec![Entry::Assistant("Cargo Test 通过了".into())];
+        let mut view = View::default();
+        view.search.query = "cargo test".into();
+        assert_eq!(view.matches(&entries), vec![0]);
+    }
+
+    #[test]
+    fn footer_reflects_search_state() {
+        let mut view = View::default();
+        assert!(footer_text(&view).contains("Esc 返回"));
+        view.search.typing = Some("abc".into());
+        assert!(footer_text(&view).contains("搜索：abc"));
+        view.search.typing = None;
+        view.search.query = "abc".into();
+        view.search.current = 2;
+        let footer = footer_text(&view);
+        assert!(
+            footer.contains("abc") && footer.contains("第 2 个匹配"),
+            "{footer}"
+        );
     }
 
     #[test]
