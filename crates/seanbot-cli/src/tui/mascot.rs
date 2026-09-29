@@ -238,17 +238,19 @@ pub fn welcome_lines(
         "/ 查看命令 · ctrl+o 转录 · ctrl+c 退出".to_string(),
     ];
     let art = mascot.lines();
-    let width = 46usize;
+    // 总宽（含左右边框）：内容行 = "│ " + 12 列像素画 + 填充 + "│"
+    const BOX_WIDTH: usize = 48;
+    const PREFIX: usize = 2 + 12;
     let frame_style = Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C));
     let mut lines = vec![Line::from(Span::styled(
-        format!("┌{}┐", "─".repeat(width)),
+        format!("┌{}┐", "─".repeat(BOX_WIDTH - 2)),
         frame_style,
     ))];
     for (index, art_line) in art.iter().enumerate() {
         let mut spans = vec![Span::styled("│ ", frame_style)];
         spans.extend(art_line.spans.iter().cloned());
-        let used = 14usize;
-        let budget = width.saturating_sub(used);
+        // 减 1 是右侧那一格边框：边框宽 - 前缀 - 右边框 = 留给文案与填充的列数
+        let budget = BOX_WIDTH - PREFIX - 1;
         let tail = match right.get(index) {
             // 按**显示宽度**裁：CJK 与 ⚡ 这类宽字符占两列，按字符数算会把边框撑歪
             Some(text) => clip_width(&format!("  {text}"), budget),
@@ -261,7 +263,7 @@ pub fn welcome_lines(
         lines.push(Line::from(spans));
     }
     lines.push(Line::from(Span::styled(
-        format!("└{}┘", "─".repeat(width)),
+        format!("└{}┘", "─".repeat(BOX_WIDTH - 2)),
         frame_style,
     )));
     lines
