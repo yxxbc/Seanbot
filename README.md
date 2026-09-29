@@ -14,6 +14,8 @@
 
 </div>
 
+官网（自动识别你的系统、下载与产品预览）：<https://yxxbc.github.io/Seanbot/>
+
 ## 安装
 
 macOS / Linux：

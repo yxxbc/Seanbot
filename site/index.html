@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seanbot — 终端里的全能 AI 代理</title>
+<meta name="description" content="Seanbot 是一个运行在终端里的中文 AI 代理：读文件、改代码、跑命令、查资料，说清楚你要什么，剩下的交给它。支持 macOS、Linux 与 Windows。">
+<meta name="theme-color" content="#0E0D10">
+<link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/style.css">
+
+<!-- 社交分享卡片：素材补齐后换成 1200×630 的 PNG（assets/og.png），SVG 部分平台不识别 -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Seanbot — 终端里的全能 AI 代理">
+<meta property="og:description" content="说清楚你要什么，剩下的交给它。Rust 编写的中文终端 AI 代理。">
+<meta property="og:image" content="assets/icon.svg">
+<meta property="og:url" content="https://yxxbc.github.io/Seanbot/">
+
+</head>
+<body>
+<a class="skip" href="#download">跳到下载</a>
+
+<!-- 图标精灵：全部用 currentColor，跟随文字颜色 -->
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="i-apple" viewBox="0 0 24 24">
+    <path d="M16.4 12.6c0-2.2 1.8-3.3 1.9-3.4-1-1.5-2.6-1.7-3.2-1.7-1.4-.1-2.7.8-3.4.8-.7 0-1.8-.8-3-.8-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 2.9 2.3 1.2 0 1.6-.7 3-.7s1.8.7 3 .7 2-1.1 2.8-2.2c.9-1.3 1.3-2.5 1.3-2.6-.1 0-2.6-1-2.7-3.9Z"/>
+    <path d="M14.6 5.7c.6-.8 1-1.8.9-2.9-.9 0-2 .6-2.6 1.3-.6.7-1.1 1.8-.9 2.8 1 .1 2-.5 2.6-1.2Z"/>
+  </symbol>
+  <symbol id="i-windows" viewBox="0 0 24 24">
+    <path d="M3 4.6 10.4 3.5v7.9H3V4.6Zm8.6-1.2L21 2v9.4h-9.4V3.4ZM3 12.6h7.4v7.9L3 19.4v-6.8Zm8.6 0H21V22l-9.4-1.4v-8Z"/>
+  </symbol>
+  <symbol id="i-linux" viewBox="0 0 24 24">
+    <path d="M12 2.1c-1.9 0-3.3 1.5-3.3 3.5 0 .8.1 1.6-.4 2.5-1.6 2.6-3.1 5-3.1 7.3 0 2.9 3 5.5 6.8 5.5s6.8-2.6 6.8-5.5c0-2.3-1.5-4.7-3.1-7.3-.5-.9-.4-1.7-.4-2.5 0-2-1.4-3.5-3.3-3.5Zm-1.3 3.6c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9Zm2.6 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9Z"/>
+  </symbol>
+  <symbol id="i-github" viewBox="0 0 24 24">
+    <path d="M12 .5C5.7.5.5 5.7.5 12c0 5 3.3 9.3 7.8 10.8.6.1.8-.3.8-.6v-2c-3.2.7-3.8-1.5-3.8-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.7 2.6 1.2 3.3.9.1-.7.4-1.2.7-1.5-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17.7 4.6 18.7 4.9 18.7 4.9c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6 4.6-1.5 7.8-5.8 7.8-10.8C23.5 5.7 18.3.5 12 .5Z"/>
+  </symbol>
+  <symbol id="i-download" viewBox="0 0 24 24">
+    <path d="M12 3a1 1 0 0 1 1 1v9.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-5 5a1 1 0 0 1-1.4 0l-5-5a1 1 0 1 1 1.4-1.4l3.3 3.3V4a1 1 0 0 1 1-1ZM4 18a1 1 0 0 1 1 1v1h14v-1a1 1 0 1 1 2 0v1.5A1.5 1.5 0 0 1 19.5 22h-15A1.5 1.5 0 0 1 3 20.5V19a1 1 0 0 1 1-1Z"/>
+  </symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24">
+    <path d="M9 2h9a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3h-1v-2h1a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v1H6V4a3 3 0 0 1 3-2Zm-3 6h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V10a2 2 0 0 1 2-2Z"/>
+  </symbol>
+  <symbol id="i-check" viewBox="0 0 24 24">
+    <path d="M20.3 6.3a1 1 0 0 1 .4 1.4l-8 12a1 1 0 0 1-1.5.2l-5-4.5a1 1 0 1 1 1.3-1.5l4.2 3.8 7.2-10.9a1 1 0 0 1 1.4-.3Z"/>
+  </symbol>
+</svg>
+
+<header class="nav">
+  <div class="nav__inner">
+    <a class="brand" href="#top">
+      <svg class="brand__mark" viewBox="0 0 1024 1024" aria-hidden="true">
+        <path d="M300 620C240 430 360 250 540 270c180 20 260 200 160 340-100 140-310 150-400 10Z" fill="none" stroke="#E6B85C" stroke-width="86" stroke-linecap="round"/>
+        <circle cx="512" cy="512" r="46" fill="#F4E9D8"/>
+        <circle cx="512" cy="512" r="20" fill="#D95F4B"/>
+      </svg>
+      <span class="brand__name">Seanbot</span>
+      <span class="pill pill--pre">预发布</span>
+    </a>
+    <nav class="nav__links" aria-label="页面导航">
+      <a href="#download">下载</a>
+      <a href="#preview">预览</a>
+      <a href="#features">功能</a>
+      <a href="https://github.com/yxxbc/Seanbot/blob/main/CHANGELOG.md">更新日志</a>
+    </nav>
+    <a class="btn btn--ghost btn--sm" href="https://github.com/yxxbc/Seanbot">
+      <svg class="icon" aria-hidden="true"><use href="#i-github"/></svg>
+      GitHub
+    </a>
+  </div>
+</header>
+
+<main id="top">
+
+  <!-- ============ 首屏 ============ -->
+  <section class="hero">
+    <div class="hero__grid">
+      <div class="hero__copy">
+        <p class="eyebrow">Rust · 中文界面 · DeepSeek</p>
+        <h1>你的全能代理。<br><span class="hero__sub">说清楚你要什么，剩下的交给它。</span></h1>
+        <p class="lede">
+          Seanbot 是跑在终端里的 AI 代理：读文件、改代码、跑命令、联网查资料，
+          用中文对话，把事办完而不只是聊天。支持 macOS、Linux 与 Windows。
+        </p>
+        <div class="hero__cta">
+          <a class="btn btn--primary" href="#download">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            下载 Seanbot
+          </a>
+          <a class="btn btn--ghost" href="#preview">看看长什么样</a>
+        </div>
+        <ul class="meta-list">
+          <li>Rust 1.85+</li>
+          <li>macOS · Linux · Windows</li>
+          <li>MIT 开源</li>
+        </ul>
+      </div>
+
+      <!-- 终端示意图：纯 HTML/CSS 绘制，不是截图；真截图放在下方「产品预览」 -->
+      <div class="term" role="img" aria-label="Seanbot 终端界面示意">
+        <div class="term__bar">
+          <span class="term__dots"><i></i><i></i><i></i></span>
+          <span class="term__title">sean — ~/Projects/Seanbot</span>
+        </div>
+        <div class="term__screen">
+          <p class="term__line"><span class="t-dim">$</span> <span class="t-cmd">sean</span></p>
+          <div class="term__welcome">
+            <p class="term__welcome-title">Seanbot v0.1.1 · deepseek-flash · ~/Projects/Seanbot</p>
+            <p class="term__prompt"><span class="t-dim">›</span> 把 edit 报错改短一点，再加个「第 N 处」参数</p>
+          </div>
+          <p class="term__line"><span class="t-think">✻ Thought for 1.2s</span></p>
+          <p class="term__line"><span class="t-ok">✓</span> Read(crates/seanbot-core/src/tools/edit.rs) <span class="t-dim">· 读取 180 行</span></p>
+          <p class="term__line"><span class="t-ok">✓</span> Edit(.../tools/edit.rs) <span class="t-dim">· +42 -18 行</span></p>
+          <p class="term__line"><span class="t-ok">✓</span> Bash(cargo test -p seanbot-core) <span class="t-dim">· 32 passed</span></p>
+          <p class="term__line"><span class="t-dim">↑12.4k（缓存 9.1k） ↓318 · 4 步</span></p>
+          <p class="term__line"><span class="t-dim">$</span> <span class="term__caret" aria-hidden="true"></span></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 下载 ============ -->
+  <section class="section" id="download">
+    <div class="section__head">
+      <p class="eyebrow">下载</p>
+      <h2>选一个版本，装到你的机器上</h2>
+      <p class="lede">页面会自动识别你的系统并选中对应的包；识别不准就手动点一下系统图标。</p>
+    </div>
+
+    <div class="panel">
+      <!-- 产品切换：CLI / TUI / App。状态文案与可用性在 assets/app.js 的 PRODUCTS 里 -->
+      <div class="tabs" role="tablist" aria-label="选择产品形态">
+        <button class="tab is-active" role="tab" id="tab-cli" aria-selected="true" aria-controls="panel-download" data-product="cli">
+          <span class="tab__name">CLI</span>
+          <span class="tab__note">逐行对话</span>
+        </button>
+        <button class="tab" role="tab" id="tab-tui" aria-selected="false" aria-controls="panel-download" data-product="tui" tabindex="-1">
+          <span class="tab__name">TUI</span>
+          <span class="tab__note">全屏界面</span>
+        </button>
+        <button class="tab" role="tab" id="tab-app" aria-selected="false" aria-controls="panel-download" data-product="app" tabindex="-1">
+          <span class="tab__name">App</span>
+          <span class="tab__note">桌面端</span>
+        </button>
+      </div>
+
+      <div class="panel__body" id="panel-download" role="tabpanel" aria-labelledby="tab-cli" tabindex="0">
+        <div class="statusline">
+          <span class="pill" id="status-pill">可用</span>
+          <p class="statusline__text" id="status-text"></p>
+        </div>
+
+        <div class="os">
+          <div class="os__chips" role="group" aria-label="操作系统">
+            <button class="oschip" type="button" data-os="macos">
+              <svg class="icon" aria-hidden="true"><use href="#i-apple"/></svg>macOS
+            </button>
+            <button class="oschip" type="button" data-os="windows">
+              <svg class="icon" aria-hidden="true"><use href="#i-windows"/></svg>Windows
+            </button>
+            <button class="oschip" type="button" data-os="linux">
+              <svg class="icon" aria-hidden="true"><use href="#i-linux"/></svg>Linux
+            </button>
+          </div>
+          <p class="os__detect" id="detect-note" role="status" aria-live="polite">正在识别你的系统…</p>
+        </div>
+
+        <!-- 架构切换：只在 macOS / Linux 显示（Windows 只发布 x64） -->
+        <div class="arch" id="arch-row" hidden>
+          <span class="arch__label">架构</span>
+          <div class="arch__chips" role="group" aria-label="CPU 架构" id="arch-chips"></div>
+        </div>
+
+        <div class="actions">
+          <a class="btn btn--primary" id="download-btn" href="https://github.com/yxxbc/Seanbot/releases">
+            <svg class="icon" aria-hidden="true"><use href="#i-download"/></svg>
+            <span id="download-label">下载</span>
+          </a>
+          <a class="btn btn--ghost" href="https://github.com/yxxbc/Seanbot/releases">所有版本与校验和</a>
+        </div>
+        <p class="actions__meta" id="download-meta"></p>
+
+        <div class="install" id="install-box">
+          <div class="install__head">
+            <span id="install-title">一行命令安装</span>
+            <button class="copy" type="button" id="copy-btn">
+              <svg class="icon" aria-hidden="true"><use href="#i-copy"/></svg>
+              <span id="copy-label">复制</span>
+            </button>
+          </div>
+          <pre class="install__code"><code id="install-cmd">curl -fsSL https://raw.githubusercontent.com/yxxbc/Seanbot/main/scripts/install.sh | sh</code></pre>
+          <p class="install__note" id="install-note"></p>
+        </div>
+
+        <!-- App 未发布时的说明；由 JS 控制显示 -->
+        <div class="wip" id="wip-note" hidden>
+          <p class="wip__title">桌面端正在开发</p>
+          <p class="wip__text">
+            目前还没有可下载的桌面版。想第一时间拿到，可以到 GitHub 关注 Releases，
+            或者在 Issue 里说一句你最想要的能力。
+          </p>
+          <a class="btn btn--ghost" href="https://github.com/yxxbc/Seanbot/releases">关注 Releases</a>
+        </div>
+
+        <p class="fineprint">
+          预发布版本：接口与命令可能变动。安装包与 <code>SHA256SUMS</code> 都在
+          <a href="https://github.com/yxxbc/Seanbot/releases">GitHub Releases</a>；
+          装好后用 <code>sean update</code> 升级。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 产品预览 ============ -->
+  <section class="section" id="preview">
+    <div class="section__head">
+      <p class="eyebrow">产品预览</p>
+      <h2>切换版本，看对应的界面</h2>
+      <p class="lede">预览图与下载选择保持同步。</p>
+    </div>
+
+    <!--
+      素材接入说明（以后补图不用改 JS）：
+      1) 把截图放进 site/previews/，文件名固定为 cli.png / tui.png / app.png
+         推荐 1600×1000 左右、PNG、单张 < 1 MiB（仓库 pre-commit 钩子会拦下超过 1 MiB 的文件）
+      2) 刷新页面即可：这里会先尝试加载图片，加载失败才退回「正在补充」占位
+      3) 想换文件名或格式：改 site/assets/app.js 里 PRODUCTS[...].preview
+    -->
+    <figure class="window">
+      <div class="window__bar">
+        <span class="window__dots"><i></i><i></i><i></i></span>
+        <span class="window__title" id="preview-title">sean — 终端</span>
+        <span class="pill" id="preview-pill">可用</span>
+      </div>
+      <div class="window__body">
+        <img class="window__img" id="preview-img" alt="" hidden>
+        <div class="placeholder" id="placeholder">
+          <svg class="placeholder__mark" viewBox="0 0 1024 1024" aria-hidden="true">
+            <path d="M300 620C240 430 360 250 540 270c180 20 260 200 160 340-100 140-310 150-400 10Z" fill="none" stroke="#E6B85C" stroke-width="86" stroke-linecap="round" opacity=".55"/>
+            <circle cx="512" cy="512" r="46" fill="#F4E9D8" opacity=".55"/>
+          </svg>
+          <p class="placeholder__title" id="placeholder-title">预览图正在补充</p>
+          <p class="placeholder__note" id="placeholder-note"></p>
+        </div>
+      </div>
+      <figcaption class="window__caption" id="preview-caption"></figcaption>
+    </figure>
+    <noscript><p class="fineprint">未启用 JavaScript：上面固定显示 CLI 的预览占位，下载请手动选择系统。</p></noscript>
+  </section>
+
+  <!-- ============ 功能 ============ -->
+  <section class="section" id="features">
+    <div class="features">
+      <div class="features__intro">
+        <p class="eyebrow">它到底能做什么</p>
+        <h2>不只是聊天，它能动手</h2>
+        <p class="lede">
+          Seanbot 把工具调用串成一条链路：先看现状，再动手改，改完自己验证。
+          每一步都在你的终端里可见、可打断、可拒绝。
+        </p>
+        <a class="btn btn--ghost" href="https://github.com/yxxbc/Seanbot#readme">看完整说明</a>
+      </div>
+      <ol class="feature-list">
+        <li>
+          <span class="feature-list__idx">01</span>
+          <h3>七个内置工具</h3>
+          <p><code>read</code> <code>edit</code> <code>bash</code> <code>search</code> <code>perceive</code> <code>web_search</code> <code>web_fetch</code>——读改跑查一条龙，命令受黑名单约束。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">02</span>
+          <h3>会话随时接着聊</h3>
+          <p><code>sean -c</code> 继续上一次，<code>sean -r</code> 从列表里挑。历史逐条落盘，恢复后前缀缓存照旧命中。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">03</span>
+          <h3>改动前先问你</h3>
+          <p>确认模式下 <code>edit</code> 与 <code>bash</code> 逐次征求许可，也能一键 YOLO；黑名单在任何模式下都生效。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">04</span>
+          <h3>中文优先</h3>
+          <p>界面、提示词、报错都是中文；命令与工具名保持英文，方便和文档对照。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">05</span>
+          <h3>自己升级自己</h3>
+          <p><code>sean update</code> 查最新版、下载对应平台的包、校验 SHA256 后原地替换。</p>
+        </li>
+        <li>
+          <span class="feature-list__idx">06</span>
+          <h3>换厂商只是加一条描述</h3>
+          <p>厂商层数据驱动，内置 DeepSeek；任何 OpenAI 兼容服务加一条描述即可接入。</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ============ 状态 ============ -->
+  <section class="section section--tight" id="status">
+    <div class="section__head">
+      <p class="eyebrow">项目状态</p>
+      <h2>三样东西，进度不一样</h2>
+    </div>
+    <div class="status-grid">
+      <div class="status-card">
+        <div class="status-card__top"><span class="pill">可用</span><span class="status-card__name">CLI</span></div>
+        <p>终端里的逐行对话，五个平台（macOS / Linux / Windows）的发布包已经能装。</p>
+      </div>
+      <div class="status-card">
+        <div class="status-card__top"><span class="pill pill--pre">预发布</span><span class="status-card__name">TUI</span></div>
+        <p>ratatui 全屏界面：斜杠命令浮窗、工具确认、Markdown 渲染、全屏转录视图。</p>
+      </div>
+      <div class="status-card">
+        <div class="status-card__top"><span class="pill pill--wip">开发中</span><span class="status-card__name">App</span></div>
+        <p>桌面端还在做，没有可下载的版本。欢迎在 Issue 里提需求。</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer__inner">
+    <div class="footer__brand">
+      <svg class="brand__mark" viewBox="0 0 1024 1024" aria-hidden="true">
+        <path d="M300 620C240 430 360 250 540 270c180 20 260 200 160 340-100 140-310 150-400 10Z" fill="none" stroke="#E6B85C" stroke-width="86" stroke-linecap="round"/>
+        <circle cx="512" cy="512" r="46" fill="#F4E9D8"/>
+        <circle cx="512" cy="512" r="20" fill="#D95F4B"/>
+      </svg>
+      <div>
+        <p class="footer__name">Seanbot</p>
+        <p class="footer__tag">你的全能代理 · Made with 🦀 Rust</p>
+      </div>
+    </div>
+    <nav class="footer__links" aria-label="相关链接">
+      <a href="https://github.com/yxxbc/Seanbot">GitHub</a>
+      <a href="https://github.com/yxxbc/Seanbot/issues">问题反馈</a>
+      <a href="https://github.com/yxxbc/Seanbot/blob/main/CHANGELOG.md">更新日志</a>
+      <a href="https://github.com/yxxbc/Seanbot/blob/main/LICENSE">MIT 协议</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="assets/app.js" defer></script>
+</body>
+</html>

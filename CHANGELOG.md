@@ -26,6 +26,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 新内置工具 `config`：Sean 可以查看（`list`、`get`）与修改（`set`、`unset`）上述上限；只读动作直接执行，改动动作会先征求确认，写入时保留配置文件里的注释与其它设置
 - 配置文件保护：`config.toml` 只能由 `config` 工具或用户手动编辑修改——`edit` 拒绝改动、`read` 拒绝读取（避免密钥进入对话）、`bash` 命中路径写法时直接拒绝、`search` 跳过该文件；密钥与 bash 黑名单不能通过工具修改
 - `edit` 新增 `occurrence` 参数：同一段文本在文件中出现多次时直接指定替换第几处（从 1 开始，每次在当前内容上重新计数），不必为了唯一性反复加长 `old_string`；与 `replace_all` 互斥
+- 项目官网 `site/`：自动识别访问者的系统与 CPU 架构并选中对应安装包（macOS Apple 芯片 / Intel、Windows x64、Linux x86_64 / ARM64），给出 `install.sh` / `install.ps1` 一行命令；CLI / TUI / App 三个形态可切换，预览图随之联动，素材未就位时显示「正在补充」占位，桌面端标注「开发中」只留关注入口；纯静态、零依赖，由 `.github/workflows/pages.yml` 发布到 GitHub Pages
 
 ### 修复
 

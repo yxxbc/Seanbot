@@ -1,0 +1,51 @@
+# 把 site/ 发布到 GitHub Pages。
+#
+# 首次启用（仓库设置里做一次）：
+#   Settings → Pages → Build and deployment → Source 选 "GitHub Actions"
+# 之后推到 main（且改动 site/ 或本文件）就会自动部署，
+# 线上地址：https://yxxbc.github.io/Seanbot/
+#
+# 想换成自定义域名：在 Settings → Pages 填域名，并在 site/ 里加一个 CNAME 文件
+# （内容就一行域名，构建时会一起上传）。
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一时间只跑一个部署；新推送顶掉排队中的旧任务，但不打断正在发布的
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 部署到 GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      # 站点是纯静态文件，没有构建步骤：直接把 site/ 打包上传
+      - name: 打包 site/
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: 发布
+        id: deployment
+        uses: actions/deploy-pages@v4
