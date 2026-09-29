@@ -78,6 +78,8 @@ impl Drop for Guard {
 /// 还原终端：关闭 bracketed paste、显示光标、退出 raw mode。
 fn restore_terminal() -> io::Result<()> {
     let mut out = io::stdout();
+    // 鼠标捕获也要还回去，否则退出后终端还在捕获鼠标（滚动/选择都变怪）
+    let _ = execute!(out, crossterm::event::DisableMouseCapture);
     let _ = execute!(out, DisableBracketedPaste);
     let _ = execute!(out, crossterm::cursor::Show);
     let _ = disable_raw_mode();
@@ -995,6 +997,10 @@ pub async fn run(
     let _ = cfg;
 
     let _guard = Guard::enter().context("进入终端原始模式失败")?;
+    // 配置里开了鼠标就接上（退出时由 Guard 还原）
+    if cfg.ui.mouse {
+        let _ = execute!(io::stdout(), crossterm::event::EnableMouseCapture);
+    }
     let mut terminal = Terminal::with_options(
         CrosstermBackend::new(io::stdout()),
         TerminalOptions {
