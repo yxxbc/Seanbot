@@ -36,3 +36,6 @@ tmp/
 # ===== 本地文档（不提交） =====
 docs/Seanbot/
 docs/superpowers/
+
+# ==== 测试agent时产生的jsonl文件 ====
+trace.jsonl
