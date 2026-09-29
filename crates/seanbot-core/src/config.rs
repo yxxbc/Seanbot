@@ -19,6 +19,10 @@ pub const DEFAULT_DENY: &[&str] = &[
     "chmod -R",
     "git push --force",
     "git push -f",
+    "Remove-Item",
+    "del",
+    "rd",
+    "format",
 ];
 
 #[derive(Debug, thiserror::Error)]

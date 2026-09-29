@@ -191,6 +191,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[cfg(unix)]
     #[test]
     fn resolve_relative_and_absolute() {
         let cwd = Path::new("/work");

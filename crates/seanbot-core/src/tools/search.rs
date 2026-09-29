@@ -148,7 +148,7 @@ fn run_search(
                 continue;
             }
         }
-        let shown = path.strip_prefix(cwd).unwrap_or(path).display().to_string();
+        let shown = display_path(path.strip_prefix(cwd).unwrap_or(path));
         match regex {
             None => {
                 if lines.len() >= max {
@@ -182,6 +182,16 @@ fn run_search(
         }
     }
     Ok(Found { lines, truncated })
+}
+
+/// 统一用 `/` 显示路径，Windows 上与其他平台保持一致。
+fn display_path(p: &Path) -> String {
+    let s = p.display().to_string();
+    if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s
+    }
 }
 
 fn clip(s: &str, max: usize) -> String {

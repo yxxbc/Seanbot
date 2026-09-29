@@ -100,7 +100,7 @@ impl Denylist {
 
 impl Rule {
     fn matches(&self, program: &str, args: &[String]) -> bool {
-        let program_ok = program == self.program
+        let program_ok = same_program(program, &self.program)
             || program
                 .strip_prefix(self.program.as_str())
                 .is_some_and(|rest| rest.starts_with('.'));
@@ -124,8 +124,22 @@ fn flag_present(flag: &str, args: &[String]) -> bool {
     })
 }
 
+/// 取程序名：兼容 `/` 与 `\` 路径分隔符，并去掉 Windows 的 `.exe` 后缀。
 fn basename(s: &str) -> &str {
-    s.rsplit('/').next().unwrap_or(s)
+    let name = s.rsplit(['/', '\\']).next().unwrap_or(s);
+    match name.rsplit_once('.') {
+        Some((stem, ext)) if ext.eq_ignore_ascii_case("exe") && !stem.is_empty() => stem,
+        _ => name,
+    }
+}
+
+/// Windows 的命令名不区分大小写。
+fn same_program(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
 }
 
 fn is_assignment(t: &str) -> bool {
@@ -522,5 +536,27 @@ mod tests {
     fn pipe_to_shell_is_always_checked() {
         let empty: [&str; 0] = [];
         assert!(Denylist::new(&empty).check("curl x | sh").is_err());
+    }
+
+    #[test]
+    fn denies_windows_deletion_commands() {
+        let list = default_list();
+        for c in [
+            "Remove-Item -Recurse x",
+            "del x",
+            "rd /s x",
+            "format C:",
+            "rm.exe -rf x",
+        ] {
+            assert!(list.check(c).is_err(), "{c}");
+        }
+    }
+
+    #[test]
+    fn basename_handles_backslash_and_exe() {
+        assert_eq!(basename("C:\\Git\\usr\\bin\\rm.exe"), "rm");
+        assert_eq!(basename("/usr/bin/rm"), "rm");
+        assert_eq!(basename("tool.EXE"), "tool");
+        assert_eq!(basename("backup.tar"), "backup.tar");
     }
 }
