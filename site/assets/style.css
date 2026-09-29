@@ -250,6 +250,52 @@ p { margin: 0; }
   margin-bottom: 12px;
 }
 
+/* ------------------------------------------------- 宣言（它不是一个聊天窗口） */
+/* 宣言区紧接首屏：上面收紧、与下一节共用一个留白 */
+.section--statement { padding-top: 44px; padding-bottom: 16px; }
+.statement { max-width: 860px; }
+.statement h2 { font-size: clamp(1.85rem, 4.2vw, 3.05rem); line-height: 1.14; letter-spacing: -.035em; }
+.statement h2 span { color: var(--muted); }
+.statement .lede { max-width: 62ch; font-size: 16.5px; }
+
+/* ----------------------------------------------------- 工作方式（Agent 循环） */
+.flow {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.flow__card {
+  position: relative;
+  min-height: 180px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(244, 233, 216, .025);
+}
+.flow__num { font-family: var(--mono); font-size: 12px; color: var(--gold); }
+.flow__card h3 { margin: 20px 0 8px; font-size: 17px; }
+.flow__card p { color: var(--muted); font-size: 13.5px; }
+.flow__card code {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(244, 233, 216, .05);
+  font-size: 12px;
+}
+/* 卡片之间的箭头：纯装饰，窄屏隐藏 */
+.flow__arrow {
+  position: absolute;
+  top: 50%;
+  right: -15px;
+  transform: translateY(-50%);
+  color: var(--faint);
+  font-size: 15px;
+  line-height: 1;
+}
+
 /* --------------------------------------------------------------- 下载面板 */
 .panel {
   border: 1px solid var(--line);
@@ -424,7 +470,17 @@ p { margin: 0; }
 .feature-list { margin: 0; padding: 0; list-style: none; }
 .feature-list li { padding: 22px 0; border-top: 1px solid var(--line); }
 .feature-list li:last-child { border-bottom: 1px solid var(--line); }
-.feature-list__idx { font-family: var(--mono); font-size: 12px; color: var(--gold); display: block; margin-bottom: 8px; }
+.feature-list__head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.feature-list__idx { font-family: var(--mono); font-size: 12px; color: var(--gold); }
+.feature-list__tag {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .06em;
+  color: var(--faint);
+}
 .feature-list h3 { font-size: 17px; margin-bottom: 6px; }
 .feature-list p { color: var(--muted); font-size: 14.5px; }
 .feature-list code {
@@ -498,10 +554,16 @@ p { margin: 0; }
   .features__intro { position: static; }
   .status-grid { grid-template-columns: 1fr; }
   .nav__links { display: none; }
+  /* 五步流程在窄屏折成两列：箭头只在单行排列时才有意义 */
+  .flow { grid-template-columns: repeat(2, 1fr); }
+  .flow__arrow { display: none; }
 }
 @media (max-width: 620px) {
   .section { padding: 60px 18px; }
+  .section--statement { padding-top: 32px; padding-bottom: 8px; }
   .hero { padding: 40px 18px 52px; }
+  .flow { grid-template-columns: 1fr; }
+  .flow__card { min-height: 0; }
   .panel__body { padding: 20px 12px 14px; }
   .tab { padding: 10px 10px; }
   .tab__note { display: none; }
