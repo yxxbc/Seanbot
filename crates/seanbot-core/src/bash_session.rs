@@ -164,7 +164,7 @@ impl BashSessions {
             Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
         };
         let mut names: Vec<String> = sessions.keys().cloned().collect();
-        for (_, session) in sessions.iter_mut() {
+        for session in sessions.values_mut() {
             session.shutdown();
         }
         names.sort();
