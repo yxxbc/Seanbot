@@ -4,25 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Seanbot is a terminal AI agent (command name `sean`) written in Rust, talking to DeepSeek via an OpenAI-compatible API. The repo is at the very start: currently a single-crate `cargo new` skeleton (`src/main.rs` prints "Hello, world!", edition 2024, no dependencies). The MVP design lives in `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md` — read it before implementing anything; it is the source of truth for the architecture described below. Long-term concept notes (kernel, tools, knowledge base, subagents, plugins) are in `docs/Seanbot/`. All docs are written in Chinese.
+Seanbot is a terminal AI agent (command name `sean`) written in Rust, talking to DeepSeek via an OpenAI-compatible API. The MVP described in `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md` is implemented as a three-crate workspace; the task-by-task plan is in `docs/superpowers/plans/2026-09-29-seanbot-mvp.md` (both are local-only: `docs/superpowers/` is git-ignored). Long-term concept notes (kernel, tools, knowledge base, subagents, plugins) are in `docs/Seanbot/`. All docs are written in Chinese.
 
 ## Commands
 
 ```bash
 cargo build
-cargo run                      # once the CLI crate exists: cargo run -p seanbot-cli -- <args>
-cargo test                     # all tests
-cargo test <name_substring>    # single test / filter
-cargo test -p seanbot-core     # one crate (after the workspace split)
-cargo clippy --all-targets
-cargo fmt
+cargo run -p seanbot-cli -- <args>        # e.g. `-- config`, `-- -p "问题"`, `-- models`
+cargo test                                # all tests
+cargo test -p seanbot-core <name>         # one crate, filtered by test name
+cargo test -p seanbot-core --test agent   # agent-loop integration tests (fake provider)
+cargo clippy --all-targets -- -D warnings
+cargo fmt --all
 ```
 
-Snapshot tests (planned, `insta`): review with `cargo insta review`.
+CLI renderer tests use `insta` inline snapshots in `crates/seanbot-cli/src/render.rs`. Set `SEANBOT_HOME=<dir>` to point the CLI at a throwaway data dir instead of `~/.seanbot`.
 
-## Target architecture (MVP)
+## Architecture (MVP)
 
-Cargo workspace with three crates and a strictly one-way dependency chain: `seanbot-cli → seanbot-core → seanbot-provider`. The existing `src/main.rs` is meant to move into `crates/seanbot-cli/` (package `seanbot-cli`, `[[bin]] name = "sean"`).
+Cargo workspace with three crates and a strictly one-way dependency chain: `seanbot-cli → seanbot-core → seanbot-provider`. The binary lives in `crates/seanbot-cli/` (package `seanbot-cli`, `[[bin]] name = "sean"`).
 
 - **seanbot-provider** — vendor layer. `Provider` trait (`info`, `list_models`, `stream`) returning `StreamChunk`s. Vendors are data-driven `ProviderDescriptor`s (`builtin_providers()`, `create()`); a new OpenAI-compatible vendor is just a new descriptor, vendor differences go in `Quirks`. Streaming tool-call fragments are assembled inside the provider; the core only ever sees complete `ToolCall`s with raw-string JSON arguments. Retries (3×, exponential backoff, honor `Retry-After`) happen only before the first chunk arrives. Knows nothing about agents or tool execution.
 - **seanbot-core** — the agent loop, tool registry, the four builtin tools (`read`, `edit`, `bash`, `search`), bash denylist, config. Must never touch the terminal: its only UI surfaces are the `AgentEvent` stream (mpsc) and the `PermissionHandler` trait, so a future Tauri desktop app can reuse it. Entry point is `Agent::run_turn(input, events, cancel)`.
@@ -34,9 +34,9 @@ Invariants that span multiple components:
 - **Prefix-cache stability** (DeepSeek caches automatically): system prompt fixed for the whole session (no timestamps; `/clear` does not rebuild it), history is append-only, tool definitions serialized in identical order every request (`ToolRegistry` is a `BTreeMap`).
 - **Builtin tools are immutable**: registering a tool whose name collides with a builtin is an error. `ToolSource` distinguishes `Builtin | AgentCreated | Plugin`.
 - **`edit` requires a prior `read`** in the same session with an unchanged mtime (tracked by `ReadTracker`).
-- **bash denylist** is always enforced, before `PermissionHandler`, and can't be bypassed; tokenization failure means deny. Matching splits on `; && || | \n`, extracts `$(...)`/backticks, strips env assignments and wrapper commands, basename-matches by word prefix, and blocks `curl|wget` piped into a shell. See spec §5.3 for exact rules.
+- **bash denylist** is always enforced, before `PermissionHandler`, and can't be bypassed; tokenization failure means deny. Matching splits on `; && || | \n` and background `&`, extracts `$(...)`/backticks, strips env assignments and wrapper commands, basename-matches by word prefix, and blocks `curl|wget` piped into a shell. See spec §5.3 for exact rules.
 
-Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`); `DEEPSEEK_API_KEY` overrides the config key.
+Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`); `DEEPSEEK_API_KEY` overrides the config key. Default model is `deepseek-flash`; DeepSeek requires `reasoning_content` to be echoed back on every request that carries tools (`Quirks::echo_reasoning`).
 
 ## Conventions
 
