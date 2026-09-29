@@ -1,0 +1,23 @@
+[package]
+name = "seanbot-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "sean"
+path = "src/main.rs"
+
+[dependencies]
+seanbot-core.workspace = true
+seanbot-provider.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+dirs.workspace = true
+rpassword.workspace = true
+rustyline.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+insta.workspace = true

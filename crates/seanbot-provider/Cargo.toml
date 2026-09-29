@@ -1,0 +1,15 @@
+[package]
+name = "seanbot-provider"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+futures.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
