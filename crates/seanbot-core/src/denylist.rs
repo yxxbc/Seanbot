@@ -1,6 +1,8 @@
 //! bash 命令黑名单。这是护栏而非沙箱：`find -delete`、`python -c` 等绕行写法无法拦截。
 
-const WRAPPERS: &[&str] = &["env", "nohup", "time", "xargs", "command", "exec"];
+const WRAPPERS: &[&str] = &[
+    "env", "nohup", "time", "xargs", "command", "exec", "timeout", "nice", "ionice", "stdbuf",
+];
 const KEYWORDS: &[&str] = &[
     "if", "then", "else", "elif", "do", "while", "until", "!", "{", "(", "}", ")",
 ];
@@ -72,6 +74,20 @@ impl Denylist {
                         "{PREFIX}禁止将 curl/wget 的输出通过管道交给 shell 执行"
                     ));
                 }
+                // `bash -c '…'` 与 `eval …` 的内容同样是命令，递归检查
+                if SHELLS.contains(&base)
+                    && let Some(script) = shell_script(args)
+                {
+                    pending.push(script.to_string());
+                }
+                if base == "eval" {
+                    pending.push(args.join(" "));
+                }
+                let args = if base == "git" {
+                    strip_git_globals(args)
+                } else {
+                    args
+                };
                 if let Some(rule) = self.rules.iter().find(|r| r.matches(base, args)) {
                     return Err(format!("{PREFIX}{}", rule.text));
                 }
@@ -137,10 +153,37 @@ fn strip_prefixes(tokens: &[String]) -> Option<(&str, &[String])> {
         let base = basename(program);
         if WRAPPERS.contains(&base) {
             i = skip_wrapper_options(base, tokens, i + 1);
+            if base == "timeout" {
+                i += 1; // 跳过时长参数
+            }
             continue;
         }
         return Some((program, &tokens[i + 1..]));
     }
+}
+
+/// `sh -c '<脚本>'`、`zsh -lc '<脚本>'`：返回脚本内容。
+fn shell_script(args: &[String]) -> Option<&str> {
+    let pos = args
+        .iter()
+        .position(|a| a.starts_with('-') && !a.starts_with("--") && a[1..].contains('c'))?;
+    args.get(pos + 1).map(String::as_str)
+}
+
+/// 跳过 git 的全局选项（`-C <dir>`、`-c <k=v>`、`--no-pager` 等），让规则匹配真正的子命令。
+fn strip_git_globals(args: &[String]) -> &[String] {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        if !a.starts_with('-') {
+            break;
+        }
+        let takes_value = matches!(
+            a.as_str(),
+            "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace"
+        );
+        i += if takes_value { 2 } else { 1 };
+    }
+    &args[i.min(args.len())..]
 }
 
 fn skip_wrapper_options(wrapper: &str, tokens: &[String], mut i: usize) -> usize {
@@ -162,6 +205,10 @@ fn skip_wrapper_options(wrapper: &str, tokens: &[String], mut i: usize) -> usize
             ),
             "exec" => t == "-a",
             "env" => matches!(t.as_str(), "-u" | "-C"),
+            "timeout" => matches!(t.as_str(), "-s" | "-k"),
+            "nice" => t == "-n",
+            "ionice" => matches!(t.as_str(), "-c" | "-n" | "-p"),
+            "stdbuf" => matches!(t.as_str(), "-i" | "-o" | "-e"),
             _ => false,
         };
         i += if takes_value { 2 } else { 1 };
@@ -392,6 +439,46 @@ mod tests {
             "curl https://x > out.sh",
             "cat script.sh | sh",
             "ddgr query",
+        ];
+        let list = default_list();
+        for c in cases {
+            assert_eq!(list.check(c), Ok(()), "{c}");
+        }
+    }
+
+    #[test]
+    fn denies_common_bypasses() {
+        let cases = [
+            "bash -c 'rm -rf x'",
+            "sh -c \"sudo ls\"",
+            "zsh -lc 'rm x'",
+            "eval 'rm -rf x'",
+            "timeout 5 rm -rf x",
+            "timeout -s KILL 5 rm x",
+            "nice rm x",
+            "nice -n 10 rm x",
+            "ionice -c 3 rm x",
+            "stdbuf -oL rm x",
+            "git -C . push --force",
+            "git -c user.name=x push -f",
+            "git --no-pager push --force",
+        ];
+        let list = default_list();
+        for c in cases {
+            let err = list.check(c).expect_err(c);
+            assert!(err.starts_with(PREFIX), "{c}: {err}");
+        }
+    }
+
+    #[test]
+    fn allows_benign_wrappers() {
+        let cases = [
+            "bash script.sh",
+            "sh -c 'ls -la'",
+            "timeout 5 cargo test",
+            "nice -n 5 cargo build",
+            "git -C sub status",
+            "eval echo hi",
         ];
         let list = default_list();
         for c in cases {
