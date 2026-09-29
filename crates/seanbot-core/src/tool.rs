@@ -5,7 +5,6 @@ use std::{
     io,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
-    time::SystemTime,
 };
 
 use async_trait::async_trait;
@@ -66,10 +65,39 @@ pub enum ToolError {
     Timeout(u64),
 }
 
-/// 记录本会话读过的文件及读取时的修改时间，edit 据此判断是否需要重新读取。
+/// 读取文件时记录的指纹：字节数与内容哈希。
+///
+/// 只比对内容，不比对修改时间：编辑器保存、`cargo fmt`、上一次 `edit` 都会改动 mtime，
+/// 只要内容逐字节相同，就没有重新读取的必要。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileSnapshot {
+    pub len: u64,
+    pub hash: u64,
+}
+
+impl FileSnapshot {
+    pub fn of(bytes: &[u8]) -> Self {
+        Self {
+            len: bytes.len() as u64,
+            hash: content_hash(bytes),
+        }
+    }
+}
+
+/// FNV-1a 64 位：这里只需要判断"内容有没有变"，不值得引入依赖。
+fn content_hash(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// 记录本会话读过的文件内容指纹，edit 据此判断是否需要重新读取。
 #[derive(Debug, Clone, Default)]
 pub struct ReadTracker {
-    inner: Arc<Mutex<HashMap<PathBuf, SystemTime>>>,
+    inner: Arc<Mutex<HashMap<PathBuf, FileSnapshot>>>,
 }
 
 impl ReadTracker {
@@ -77,11 +105,11 @@ impl ReadTracker {
         std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     }
 
-    pub fn record(&self, path: &Path, mtime: SystemTime) {
-        self.inner.lock().unwrap().insert(Self::key(path), mtime);
+    pub fn record(&self, path: &Path, snapshot: FileSnapshot) {
+        self.inner.lock().unwrap().insert(Self::key(path), snapshot);
     }
 
-    pub fn get(&self, path: &Path) -> Option<SystemTime> {
+    pub fn get(&self, path: &Path) -> Option<FileSnapshot> {
         self.inner.lock().unwrap().get(&Self::key(path)).copied()
     }
 
@@ -257,11 +285,21 @@ mod tests {
         let file = dir.path().join("src/a.txt");
         std::fs::write(&file, "x").unwrap();
         let t = ReadTracker::default();
-        let now = SystemTime::now();
-        t.record(&dir.path().join("./src/../src/a.txt"), now);
-        assert_eq!(t.get(&file), Some(now));
+        let snapshot = FileSnapshot::of(b"x");
+        t.record(&dir.path().join("./src/../src/a.txt"), snapshot);
+        assert_eq!(t.get(&file), Some(snapshot));
         t.clear();
         assert_eq!(t.get(&file), None);
+    }
+
+    #[test]
+    fn snapshot_follows_content_not_time() {
+        let snapshot = FileSnapshot::of(b"hello");
+        assert_eq!(snapshot.len, 5);
+        assert_eq!(snapshot, FileSnapshot::of(b"hello"));
+        assert_ne!(snapshot, FileSnapshot::of(b"hellp"));
+        assert_ne!(snapshot, FileSnapshot::of(b"hello "));
+        assert_ne!(snapshot, FileSnapshot::of("你好".as_bytes()));
     }
 
     #[test]

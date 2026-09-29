@@ -3,8 +3,8 @@ use seanbot_provider::ToolSpec;
 use serde_json::{Value, json};
 
 use crate::tool::{
-    Risk, Tool, ToolContext, ToolError, ToolOutput, io_error, is_binary, opt_u64, resolve_path,
-    str_arg,
+    FileSnapshot, Risk, Tool, ToolContext, ToolError, ToolOutput, io_error, is_binary, opt_u64,
+    resolve_path, str_arg,
 };
 
 const DEFAULT_LIMIT: u64 = 2000;
@@ -17,7 +17,7 @@ impl Tool for ReadTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "read".into(),
-            description: "读取文本文件，返回带行号的内容（每行格式：行号<TAB>内容）。默认从第 1 行起最多读取 2000 行，可用 offset（起始行号，从 1 开始）和 limit 分段读取。修改已有文件前必须先用本工具读取。".into(),
+            description: "读取文本文件，返回带行号的内容（每行格式：行号<TAB>内容）。默认从第 1 行起最多读取 2000 行，可用 offset（起始行号，从 1 开始）和 limit 分段读取。修改已有文件前必须先用本工具读取；记录的是文件内容指纹，内容没变就不必重复读取。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -59,9 +59,8 @@ impl Tool for ReadTool {
         if is_binary(&bytes) {
             return Err(ToolError::Failed(format!("{raw} 是二进制文件，无法读取")));
         }
-        if let Ok(mtime) = meta.modified() {
-            ctx.reads.record(&path, mtime);
-        }
+        // 记录内容指纹而非修改时间：只要内容没变，read 一次就能连续编辑
+        ctx.reads.record(&path, FileSnapshot::of(&bytes));
 
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<&str> = text.lines().collect();

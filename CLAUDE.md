@@ -33,7 +33,7 @@ Invariants that span multiple components:
 - **History consistency**: every assistant `tool_call` must end up with a matching tool message — including on cancel ("用户已取消"), errors, step limit (50 model calls/turn). Tool failures, denylist hits and invalid JSON args are returned to the model as tool results, never abort the turn.
 - **Prefix-cache stability** (DeepSeek caches automatically): system prompt fixed for the whole session (no timestamps; `/clear` does not rebuild it), history is append-only, tool definitions serialized in identical order every request (`ToolRegistry` is a `BTreeMap`).
 - **Builtin tools are immutable**: registering a tool whose name collides with a builtin is an error. `ToolSource` distinguishes `Builtin | AgentCreated | Plugin`.
-- **`edit` requires a prior `read`** in the same session with an unchanged mtime (tracked by `ReadTracker`).
+- **`edit` requires a prior `read`** in the same session with unchanged file content (a length + hash fingerprint in `ReadTracker`; mtime is deliberately ignored so editor/formatter saves don't invalidate reads). Match failures are diagnostic: multi-match lists every occurrence line, whitespace/indent/EOL mismatches name the difference, and read-output line-number prefixes are stripped only as a fallback.
 - **bash denylist** is always enforced, before `PermissionHandler`, and can't be bypassed; tokenization failure means deny. Matching splits on `; && || | \n` and background `&`, extracts `$(...)`/backticks, strips env assignments and wrapper commands, basename-matches by word prefix, and blocks `curl|wget` piped into a shell. See spec §5.3 for exact rules.
 
 Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`); `DEEPSEEK_API_KEY` overrides the config key. Default model is `deepseek-flash`; DeepSeek requires `reasoning_content` to be echoed back on every request that carries tools (`Quirks::echo_reasoning`).
@@ -42,7 +42,7 @@ Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`
 
 - User-facing UI text is Chinese; tool names and commands stay English.
 - Library crates use `thiserror`; the CLI uses `anyhow`.
-- Out of scope for the MVP (don't build unless asked): TUI/desktop, confirmation UI, knowledge base, personas, subagents, plugins, session persistence, context compaction, Markdown rendering.
+- Out of scope for the MVP (don't build unless asked): TUI/desktop, knowledge base, personas, subagents, plugins, context compaction, Markdown rendering. Session persistence (`-c`/`-r`/`/resume`, `seanbot-core::session`) and the tool confirmation UI are already implemented.
 
 ## Commit conventions (hard-enforced)
 
