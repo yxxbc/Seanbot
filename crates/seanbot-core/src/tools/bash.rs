@@ -26,6 +26,84 @@ const CAPTURE_BYTES: usize = KEEP * 4;
 /// 进程退出后等待输出管道关闭的宽限期。
 const DRAIN_GRACE: Duration = Duration::from_millis(200);
 
+/// 执行命令所用的解释器。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Interpreter {
+    Bash(PathBuf),
+    Sh,
+    PowerShell,
+}
+
+impl Interpreter {
+    /// PATH 中有 bash（Windows 上为 Git Bash）时用 bash；否则 Unix 用 sh、Windows 用 PowerShell。
+    pub(crate) fn detect() -> Self {
+        if let Some(path) = find_bash() {
+            return Self::Bash(path);
+        }
+        if cfg!(windows) {
+            Self::PowerShell
+        } else {
+            Self::Sh
+        }
+    }
+
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Bash(_) => "bash",
+            Self::Sh => "sh",
+            Self::PowerShell => "PowerShell",
+        }
+    }
+
+    fn command(&self, script: &str) -> tokio::process::Command {
+        match self {
+            Self::Bash(path) => {
+                let mut c = tokio::process::Command::new(path);
+                // exec 2>&1：在 shell 内部把 stderr 合并进 stdout，保持输出先后顺序
+                c.arg("-c").arg(format!("exec 2>&1\n{script}"));
+                c
+            }
+            Self::Sh => {
+                let mut c = tokio::process::Command::new("sh");
+                c.arg("-c").arg(format!("exec 2>&1\n{script}"));
+                c
+            }
+            Self::PowerShell => {
+                let mut c = tokio::process::Command::new("powershell");
+                c.args(["-NoProfile", "-NonInteractive", "-Command"])
+                    .arg(format!("& {{ {script} }} 2>&1"));
+                c
+            }
+        }
+    }
+}
+
+fn find_bash() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "bash.exe" } else { "bash" };
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|d| d.join(name))
+            .find(|p| p.is_file() && !is_wsl_launcher(p))
+    })
+}
+
+/// Windows 自带的 `System32\bash.exe` 启动的是 WSL，而不是 Git Bash。
+fn is_wsl_launcher(path: &std::path::Path) -> bool {
+    cfg!(windows)
+        && path
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .contains("\\windows\\system32\\")
+}
+
+/// 当前平台 bash 工具实际使用的解释器名称。
+pub(crate) fn interpreter_label() -> &'static str {
+    Interpreter::detect().label()
+}
+
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
 pub struct BashTool;
 
 #[async_trait]
@@ -33,7 +111,7 @@ impl Tool for BashTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "bash".into(),
-            description: "在工作目录中执行 shell 命令（bash -c），返回合并后的 stdout 与 stderr 以及退出码。每次调用都是独立进程，不保留 cd 与环境变量；需要时用 && 串联。默认超时 120 秒，可用 timeout 调整（最多 600 秒）。输出超过 30000 字符时只保留首尾。部分危险命令被黑名单禁止。".into(),
+            description: "在工作目录中执行 shell 命令（有 bash 时使用 bash，Windows 上无 Git Bash 时使用 PowerShell），返回合并后的 stdout 与 stderr 以及退出码。每次调用都是独立进程，不保留 cd 与环境变量；需要时用 && 串联。默认超时 120 秒，可用 timeout 调整（最多 600 秒）。输出超过 30000 字符时只保留首尾。部分危险命令被黑名单禁止。".into(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -74,94 +152,103 @@ impl Tool for BashTool {
             .check(command)
             .map_err(ToolError::Failed)?;
 
-        let mut cmd = tokio::process::Command::new(shell());
-        // exec 2>&1：在 shell 内部把 stderr 合并进 stdout，保持输出先后顺序
-        cmd.arg("-c")
-            .arg(format!("exec 2>&1\n{command}"))
-            .current_dir(&ctx.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        #[cfg(unix)]
-        cmd.process_group(0);
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ToolError::Failed(format!("无法启动 shell：{e}")))?;
-        let pid = child.id();
-        let mut stdout = child.stdout.take().expect("stdout 已设置为 piped");
-
-        // 边读边截断：内存占用有上限，超时或取消时也能拿到已有输出
-        let capture = Arc::new(Mutex::new(Capture::default()));
-        let mut reader = {
-            let capture = capture.clone();
-            tokio::spawn(async move {
-                let mut buf = vec![0u8; 8192];
-                loop {
-                    match stdout.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => capture.lock().unwrap().push(&buf[..n]),
-                    }
-                }
-            })
-        };
-
-        let ended = tokio::select! {
-            status = child.wait() => Ended::Exited(status),
-            _ = tokio::time::sleep(Duration::from_secs(timeout)) => Ended::TimedOut,
-            _ = ctx.cancel.cancelled() => Ended::Cancelled,
-        };
-        if !matches!(ended, Ended::Exited(_)) {
-            kill_group(pid);
-        }
-        // 后台子进程可能一直占着管道：只给一小段宽限期收尾，不等 EOF
-        if tokio::time::timeout(DRAIN_GRACE, &mut reader)
-            .await
-            .is_err()
-        {
-            reader.abort();
-        }
-        let text = capture.lock().unwrap().render();
-        let body = text.trim_end();
-        let preview: Vec<String> = body.lines().map(str::to_string).collect();
-
-        let status = match ended {
-            Ended::Cancelled => return Err(ToolError::Cancelled),
-            Ended::TimedOut => {
-                let notice = format!("[命令执行超时（{timeout} 秒），已终止整个进程组]");
-                let content = if body.is_empty() {
-                    format!("(无输出)\n{notice}")
-                } else {
-                    format!("{body}\n{notice}")
-                };
-                return Ok(ToolOutput {
-                    content,
-                    summary: format!("超时（{timeout} 秒）"),
-                    preview,
-                    is_error: true,
-                });
-            }
-            Ended::Exited(status) => {
-                status.map_err(|e| ToolError::Failed(format!("等待进程结束失败：{e}")))?
-            }
-        };
-
-        let code = status.code();
-        let code_text = code
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| "无（被信号终止）".into());
-        let content = if body.is_empty() {
-            format!("(无输出)\n[退出码 {code_text}]")
-        } else {
-            format!("{body}\n[退出码 {code_text}]")
-        };
-        Ok(ToolOutput {
-            content,
-            summary: format!("退出码 {code_text}"),
-            preview,
-            is_error: code != Some(0),
-        })
+        execute(&Interpreter::detect(), command, timeout, ctx).await
     }
+}
+
+/// 用指定解释器执行命令：边读边截断输出，超时或取消时结束整个进程组（Windows 为进程树）。
+pub(crate) async fn execute(
+    interpreter: &Interpreter,
+    command: &str,
+    timeout: u64,
+    ctx: &ToolContext,
+) -> Result<ToolOutput, ToolError> {
+    let mut cmd = interpreter.command(command);
+    cmd.current_dir(&ctx.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| ToolError::Failed(format!("无法启动 {}：{e}", interpreter.label())))?;
+    let pid = child.id();
+    let mut stdout = child.stdout.take().expect("stdout 已设置为 piped");
+
+    // 边读边截断：内存占用有上限，超时或取消时也能拿到已有输出
+    let capture = Arc::new(Mutex::new(Capture::default()));
+    let mut reader = {
+        let capture = capture.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 8192];
+            loop {
+                match stdout.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => capture.lock().unwrap().push(&buf[..n]),
+                }
+            }
+        })
+    };
+
+    let ended = tokio::select! {
+        status = child.wait() => Ended::Exited(status),
+        _ = tokio::time::sleep(Duration::from_secs(timeout)) => Ended::TimedOut,
+        _ = ctx.cancel.cancelled() => Ended::Cancelled,
+    };
+    if !matches!(ended, Ended::Exited(_)) {
+        kill_group(pid);
+    }
+    // 后台子进程可能一直占着管道：只给一小段宽限期收尾，不等 EOF
+    if tokio::time::timeout(DRAIN_GRACE, &mut reader)
+        .await
+        .is_err()
+    {
+        reader.abort();
+    }
+    let text = capture.lock().unwrap().render();
+    let body = text.trim_end();
+    let preview: Vec<String> = body.lines().map(str::to_string).collect();
+
+    let status = match ended {
+        Ended::Cancelled => return Err(ToolError::Cancelled),
+        Ended::TimedOut => {
+            let notice = format!("[命令执行超时（{timeout} 秒），已终止整个进程组]");
+            let content = if body.is_empty() {
+                format!("(无输出)\n{notice}")
+            } else {
+                format!("{body}\n{notice}")
+            };
+            return Ok(ToolOutput {
+                content,
+                summary: format!("超时（{timeout} 秒）"),
+                preview,
+                is_error: true,
+            });
+        }
+        Ended::Exited(status) => {
+            status.map_err(|e| ToolError::Failed(format!("等待进程结束失败：{e}")))?
+        }
+    };
+
+    let code = status.code();
+    let code_text = code
+        .map(|c| c.to_string())
+        .unwrap_or_else(|| "无（被信号终止）".into());
+    let content = if body.is_empty() {
+        format!("(无输出)\n[退出码 {code_text}]")
+    } else {
+        format!("{body}\n[退出码 {code_text}]")
+    };
+    Ok(ToolOutput {
+        content,
+        summary: format!("退出码 {code_text}"),
+        preview,
+        is_error: code != Some(0),
+    })
 }
 
 enum Ended {
@@ -220,27 +307,19 @@ pub(crate) fn truncate_output(s: &str) -> String {
     format!("{head}\n…[省略 {} 字符]…\n{tail}", total - 2 * KEEP)
 }
 
-/// 优先使用 PATH 中的 bash，没有则用 sh。
-fn shell() -> PathBuf {
-    std::env::var_os("PATH")
-        .and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|d| d.join("bash"))
-                .find(|p| p.is_file())
-        })
-        .unwrap_or_else(|| PathBuf::from("sh"))
-}
-
-/// 杀掉整个进程组（包括命令启动的后台子进程）。
+/// 结束整个进程组（Unix）或进程树（Windows），包括命令启动的后台子进程。
 fn kill_group(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
     #[cfg(unix)]
-    if let Some(pid) = pid {
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
+    unsafe {
+        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
     }
-    #[cfg(not(unix))]
-    let _ = pid;
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .output();
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -426,5 +505,57 @@ mod tests {
             "cargo build"
         );
         assert_eq!(BashTool.title(&json!({"command": "a\nb"})), "a…");
+    }
+
+    #[tokio::test]
+    async fn sh_interpreter_runs_command() {
+        let (_d, ctx) = ctx();
+        let out = execute(&Interpreter::Sh, "echo from-sh", 10, &ctx)
+            .await
+            .unwrap();
+        assert_eq!(out.content, "from-sh\n[退出码 0]");
+    }
+
+    #[test]
+    fn detects_bash_on_unix() {
+        assert!(matches!(
+            Interpreter::detect(),
+            Interpreter::Bash(_) | Interpreter::Sh
+        ));
+        assert_ne!(Interpreter::PowerShell.label(), Interpreter::Sh.label());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::time::Instant;
+
+    fn ctx() -> (tempfile::TempDir, ToolContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ToolContext::new(dir.path().to_path_buf());
+        (dir, ctx)
+    }
+
+    #[tokio::test]
+    async fn powershell_runs_command() {
+        let (_d, ctx) = ctx();
+        let out = execute(&Interpreter::PowerShell, "Write-Output hi", 30, &ctx)
+            .await
+            .unwrap();
+        assert!(out.content.starts_with("hi"), "{}", out.content);
+        assert!(!out.is_error);
+    }
+
+    #[tokio::test]
+    async fn powershell_timeout_kills_tree() {
+        let (_d, ctx) = ctx();
+        let started = Instant::now();
+        let out = execute(&Interpreter::PowerShell, "Start-Sleep -Seconds 30", 2, &ctx)
+            .await
+            .unwrap();
+        assert!(out.is_error);
+        assert!(out.content.contains("超时"), "{}", out.content);
+        assert!(started.elapsed() < Duration::from_secs(15));
     }
 }

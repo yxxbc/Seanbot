@@ -6,6 +6,7 @@ mod read;
 mod search;
 
 pub use bash::BashTool;
+pub(crate) use bash::interpreter_label;
 pub use edit::EditTool;
 pub use read::ReadTool;
 pub use search::SearchTool;
