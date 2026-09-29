@@ -92,6 +92,7 @@ impl<W: Write> Renderer<W> {
 
     pub fn handle(&mut self, event: AgentEvent) -> io::Result<()> {
         match event {
+            AgentEvent::MessageAppended(_) | AgentEvent::MessageRetracted => {}
             AgentEvent::ThinkingStarted => {
                 let now = (self.clock)();
                 self.thinking_since = Some(now);

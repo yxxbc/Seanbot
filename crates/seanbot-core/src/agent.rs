@@ -97,6 +97,18 @@ impl Agent {
         }
     }
 
+    /// 恢复会话：使用会话文件中保存的系统提示词（保证请求前缀逐字节一致）。
+    pub fn with_system_prompt(mut self, system: String) -> Self {
+        self.system = system;
+        self
+    }
+
+    /// 恢复会话：载入已有历史。
+    pub fn with_history(mut self, history: Vec<Message>) -> Self {
+        self.history = history;
+        self
+    }
+
     pub fn with_max_steps(mut self, max_steps: u32) -> Self {
         self.max_steps = max_steps;
         self
@@ -140,7 +152,7 @@ impl Agent {
         events: mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) -> Result<TurnSummary, AgentError> {
-        self.history.push(Message::user(user_input));
+        self.push_message(Message::user(user_input), &events).await;
         let mut usage: Option<Usage> = None;
         let mut steps: u32 = 0;
         loop {
@@ -162,21 +174,26 @@ impl Agent {
             let step = self.stream_step(request, &events, &cancel).await;
             if let Some(u) = &step.usage {
                 usage.get_or_insert_with(Usage::default).add(u);
+                self.runtime.write().unwrap().usage.add(u);
             }
             let calls = step.calls.clone();
             let produced = !step.text.is_empty() || !step.reasoning.is_empty() || !calls.is_empty();
             if produced {
                 let reasoning = (!step.reasoning.is_empty()).then_some(step.reasoning);
-                self.history
-                    .push(Message::assistant(step.text, reasoning, step.calls));
+                self.push_message(
+                    Message::assistant(step.text, reasoning, step.calls),
+                    &events,
+                )
+                .await;
             } else if steps == 1 && (step.cancelled || step.error.is_some()) {
                 // 本轮第一步就被取消或失败且没有任何输出：撤回这条未被回应的用户消息，
                 // 否则下一轮会出现连续两条 user 消息（已发出的请求前缀不受影响）
                 self.history.pop();
+                emit(&events, AgentEvent::MessageRetracted).await;
             }
 
             if step.cancelled {
-                self.fill_results(&calls, CANCELLED);
+                self.fill_results(&calls, CANCELLED, &events).await;
                 emit(&events, AgentEvent::Cancelled).await;
                 return Ok(TurnSummary {
                     usage,
@@ -185,7 +202,7 @@ impl Agent {
                 });
             }
             if let Some(err) = step.error {
-                self.fill_results(&calls, INTERRUPTED);
+                self.fill_results(&calls, INTERRUPTED, &events).await;
                 emit(&events, AgentEvent::Error(describe_provider_error(&err))).await;
                 return Err(err.into());
             }
@@ -200,9 +217,10 @@ impl Agent {
 
             for (i, call) in calls.iter().enumerate() {
                 let content = self.execute(call, &events, &cancel).await;
-                self.history.push(Message::tool(&call.id, content));
+                self.push_message(Message::tool(&call.id, content), &events)
+                    .await;
                 if cancel.is_cancelled() {
-                    self.fill_results(&calls[i + 1..], CANCELLED);
+                    self.fill_results(&calls[i + 1..], CANCELLED, &events).await;
                     emit(&events, AgentEvent::Cancelled).await;
                     return Ok(TurnSummary {
                         usage,
@@ -367,10 +385,20 @@ impl Agent {
         }
     }
 
+    async fn push_message(&mut self, message: Message, events: &mpsc::Sender<AgentEvent>) {
+        self.history.push(message.clone());
+        emit(events, AgentEvent::MessageAppended(message)).await;
+    }
+
     /// 为未得到结果的工具调用补上结果，保证历史一致。
-    fn fill_results(&mut self, calls: &[ToolCall], text: &str) {
+    async fn fill_results(
+        &mut self,
+        calls: &[ToolCall],
+        text: &str,
+        events: &mpsc::Sender<AgentEvent>,
+    ) {
         for c in calls {
-            self.history.push(Message::tool(&c.id, text));
+            self.push_message(Message::tool(&c.id, text), events).await;
         }
     }
 }

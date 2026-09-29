@@ -206,8 +206,10 @@ async fn plain_reply() {
     assert_eq!(
         events,
         vec![
+            AgentEvent::MessageAppended(Message::user("hi")),
             AgentEvent::ThinkingStarted,
             AgentEvent::TextDelta("你好".into()),
+            AgentEvent::MessageAppended(Message::assistant("你好", None, vec![])),
             AgentEvent::TurnFinished {
                 usage: None,
                 steps: 1
@@ -530,4 +532,110 @@ async fn runtime_reflects_provider_and_model() {
     }
     h.agent.set_model("other");
     assert_eq!(h.agent.runtime().read().unwrap().model, "other");
+}
+
+/// 按事件重放历史：MessageAppended → push，MessageRetracted → pop。
+fn replay(events: &[AgentEvent], mut base: Vec<Message>) -> Vec<Message> {
+    for e in events {
+        match e {
+            AgentEvent::MessageAppended(m) => base.push(m.clone()),
+            AgentEvent::MessageRetracted => {
+                base.pop();
+            }
+            _ => {}
+        }
+    }
+    base
+}
+
+#[tokio::test]
+async fn message_events_mirror_history_on_every_path() {
+    // 多步工具调用
+    let mut h = harness(vec![
+        tool_step(vec![call("c1", "read", r#"{"path":"missing.txt"}"#)]),
+        reply("好"),
+    ]);
+    let (_, events) = run(&mut h.agent, "q", CancellationToken::new()).await;
+    assert_eq!(replay(&events, vec![]), h.agent.history());
+
+    // 首步失败：用户消息被撤回
+    let mut h = harness(vec![Step::Fail(ProviderError::Network("x".into()))]);
+    let (_, events) = run(&mut h.agent, "q", CancellationToken::new()).await;
+    assert!(events.contains(&AgentEvent::MessageRetracted));
+    assert_eq!(replay(&events, vec![]), h.agent.history());
+    assert!(h.agent.history().is_empty());
+
+    // 流中途取消：部分正文保留
+    let mut h = harness(vec![Step::Hang(vec![StreamChunk::TextDelta("半".into())])]);
+    let (_, events) = run(&mut h.agent, "q", cancel_after(100)).await;
+    assert_eq!(replay(&events, vec![]), h.agent.history());
+
+    // 步数上限：补齐的工具结果也有事件
+    let steps = (0..2)
+        .map(|i| tool_step(vec![call(&format!("c{i}"), "read", r#"{"path":"m"}"#)]))
+        .collect();
+    let Harness { agent, .. } = harness(steps);
+    let mut agent = agent.with_max_steps(2);
+    let (_, events) = run(&mut agent, "q", CancellationToken::new()).await;
+    assert_eq!(replay(&events, vec![]), agent.history());
+}
+
+#[tokio::test]
+async fn usage_accumulates_in_runtime_across_turns() {
+    let u = Usage {
+        input_tokens: 10,
+        output_tokens: 1,
+        cache_hit_tokens: Some(8),
+        cache_miss_tokens: Some(2),
+    };
+    let mut h = harness(vec![
+        Step::Chunks(vec![text("一"), finish(FinishReason::Stop, Some(u))]),
+        Step::Chunks(vec![text("二"), finish(FinishReason::Stop, Some(u))]),
+    ]);
+    run(&mut h.agent, "a", CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+    run(&mut h.agent, "b", CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+    let total = h.agent.runtime().read().unwrap().usage;
+    assert_eq!(total.input_tokens, 20);
+    assert_eq!(total.cache_hit_tokens, Some(16));
+}
+
+#[tokio::test]
+async fn resumed_agent_sends_identical_prefix() {
+    let mut first = harness(vec![
+        tool_step(vec![call("c1", "read", r#"{"path":"missing.txt"}"#)]),
+        reply("完成"),
+    ]);
+    run(&mut first.agent, "第一问", CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+    let system = first.agent.system_prompt().to_string();
+    let history = first.agent.history().to_vec();
+
+    let provider = FakeProvider::new(vec![reply("继续")]);
+    let mut resumed = Agent::new(
+        provider.clone(),
+        "fake-model",
+        builtin_registry(),
+        Arc::new(Config::default()),
+        Arc::new(AllowAll),
+        first.dir.path().to_path_buf(),
+    )
+    .with_system_prompt(system.clone())
+    .with_history(history.clone());
+    run(&mut resumed, "第二问", CancellationToken::new())
+        .await
+        .0
+        .unwrap();
+
+    let req = &provider.requests()[0];
+    assert_eq!(req.system, system);
+    assert!(req.messages.starts_with(&history));
+    assert_eq!(req.messages.len(), history.len() + 1);
 }
