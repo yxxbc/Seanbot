@@ -1,6 +1,7 @@
 mod confirm;
 mod format;
 mod journal;
+mod kb;
 mod render;
 mod repl;
 mod setup;
@@ -69,6 +70,12 @@ enum Command {
     Config,
     /// 列出当前厂商的模型
     Models,
+    /// 知识库：列出条目，或更新内置知识库
+    Kb {
+        /// 动作：list（默认）列出条目，update 从官方地址更新内置知识库
+        #[arg(value_name = "动作", default_value = "list")]
+        action: String,
+    },
     /// 检查并更新到最新版本
     Update {
         /// 只检查是否有新版本，不下载
@@ -101,6 +108,10 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             let cfg = setup::ensure_config().await?;
             setup::print_models(&cfg).await?;
             Ok(ExitCode::SUCCESS)
+        }
+        Some(Command::Kb { action }) => {
+            let cfg = setup::load_config()?.unwrap_or_default();
+            kb::run(&action, &cfg).await
         }
         Some(Command::Update { check, version }) => update::run(check, version).await,
         None => converse(cli).await,
