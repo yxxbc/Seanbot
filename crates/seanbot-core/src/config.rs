@@ -245,6 +245,8 @@ pub struct UiConfig {
     pub show_reasoning: bool,
     /// 启动时后台检查新版本：有新版本就打印一行提示（`SEANBOT_NO_UPDATE_CHECK=1` 可临时关闭）
     pub check_updates: bool,
+    /// 鼠标支持：开启后 TUI 捕获鼠标（浮窗点击/滚轮可用），代价是终端原生滚动与选择要按住 Shift
+    pub mouse: bool,
 }
 
 impl Default for UiConfig {
@@ -252,6 +254,7 @@ impl Default for UiConfig {
         Self {
             show_reasoning: false,
             check_updates: true,
+            mouse: false,
         }
     }
 }

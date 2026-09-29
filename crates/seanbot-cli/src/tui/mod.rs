@@ -96,6 +96,8 @@ pub enum Action {
     Cancel,
     /// 执行一条斜杠命令
     Command(&'static str),
+    /// 二级列表里选中了一项（模型 id / 会话文件路径）
+    Choose(PickKind, String),
     /// 退出程序
     Quit,
 }
@@ -192,6 +194,31 @@ impl Input {
 }
 
 /// 界面状态。
+/// 二级列表选出来的东西要干什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickKind {
+    Model,
+    Session,
+}
+
+/// 二级列表里的一个候选项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PickerItem {
+    label: String,
+    detail: String,
+    /// 选中后交给调用方的值（模型 id 或会话文件路径）
+    value: String,
+}
+
+/// 二级列表状态（/model、/resume）。
+#[derive(Debug)]
+struct Picker {
+    title: String,
+    kind: PickKind,
+    items: Vec<PickerItem>,
+    selected: usize,
+}
+
 /// 斜杠命令浮窗状态。
 #[derive(Debug, Default)]
 struct Popup {
@@ -203,6 +230,10 @@ pub struct App {
     input: Input,
     /// 斜杠命令浮窗（输入以 `/` 开头时出现）
     popup: Option<Popup>,
+    /// 二级列表（/model、/resume）
+    picker: Option<Picker>,
+    /// 当前工作目录（状态栏显示用）
+    cwd: String,
     /// 待写进终端滚动区的行（写出去就从内存里丢掉）
     pending: Vec<Line<'static>>,
     /// 本轮助手正文的 Markdown 流式渲染器
@@ -229,6 +260,8 @@ impl App {
         Self {
             input: Input::default(),
             popup: None,
+            picker: None,
+            cwd: cwd.to_string(),
             pending: Vec::new(),
             markdown: None,
             tail: Vec::new(),
@@ -263,6 +296,30 @@ impl App {
         // Windows 上会有 Release/Repeat，只认按下
         if key.kind != KeyEventKind::Press {
             return Action::None;
+        }
+        // 二级列表打开时，它优先吃按键
+        if self.picker.is_some() {
+            match key.code {
+                KeyCode::Up => {
+                    self.move_picker(-1);
+                    return Action::None;
+                }
+                KeyCode::Down => {
+                    self.move_picker(1);
+                    return Action::None;
+                }
+                KeyCode::Enter => {
+                    if let Some((kind, value)) = self.selected_picker() {
+                        self.picker = None;
+                        return Action::Choose(kind, value);
+                    }
+                }
+                KeyCode::Esc => {
+                    self.picker = None;
+                    return Action::None;
+                }
+                _ => return Action::None,
+            }
         }
         // 浮窗打开时，方向键/Enter/Tab/Esc 先归它
         if self.popup.is_some() {
@@ -495,6 +552,44 @@ impl App {
         self.tail.iter().skip(skip).cloned().collect()
     }
 
+    /// 打开二级列表（没有候选项时直接在滚动区说明）。
+    pub fn open_picker(&mut self, kind: PickKind, title: &str, items: Vec<PickerItem>) {
+        if items.is_empty() {
+            self.push_line(format!("{title}：没有可选项"));
+            return;
+        }
+        self.picker = Some(Picker {
+            title: title.to_string(),
+            kind,
+            items,
+            selected: 0,
+        });
+    }
+
+    /// 列表当前选中项（类型 + 值）。
+    fn selected_picker(&self) -> Option<(PickKind, String)> {
+        let picker = self.picker.as_ref()?;
+        let item = picker.items.get(picker.selected)?;
+        Some((picker.kind, item.value.clone()))
+    }
+
+    /// 上下移动列表选中项（循环）。
+    fn move_picker(&mut self, delta: isize) {
+        let Some(picker) = self.picker.as_mut() else {
+            return;
+        };
+        let len = picker.items.len() as isize;
+        if len == 0 {
+            return;
+        }
+        picker.selected = (picker.selected as isize + delta).rem_euclid(len) as usize;
+    }
+
+    /// 切换模型后刷新状态栏。
+    pub fn set_model(&mut self, model: &str) {
+        self.left = format!("{model} · {}", shorten_home(&self.cwd));
+    }
+
     /// 浮窗当前选中的命令名。
     fn selected_command(&self) -> Option<&'static str> {
         let popup = self.popup.as_ref()?;
@@ -590,6 +685,28 @@ impl App {
         frame.render_widget(Paragraph::new(self.input_line()), rows[1]);
         frame.render_widget(Paragraph::new(self.status_line()), rows[2]);
 
+        // 二级列表同样贴在输入行上方，第一行是标题
+        if let Some(picker) = &self.picker {
+            let height = (picker.items.len() as u16 + 1).min(rows[0].height);
+            if height > 1 {
+                let area = Rect {
+                    x: rows[0].x,
+                    y: rows[0].bottom().saturating_sub(height),
+                    width: rows[0].width,
+                    height,
+                };
+                let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(
+                    format!(" {} （↑↓ 选择 · Enter 确认 · Esc 取消）", picker.title),
+                    Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C)),
+                ))];
+                for (index, item) in picker.items.iter().enumerate() {
+                    lines.push(picker_line(item, index == picker.selected));
+                }
+                frame.render_widget(Clear, area);
+                frame.render_widget(Paragraph::new(lines), area);
+            }
+        }
+
         // 浮窗贴在输入行上方
         if let Some(popup) = &self.popup {
             let height = (popup.matches.len() as u16).min(rows[0].height);
@@ -625,6 +742,62 @@ fn mode_label(mode: seanbot_core::PermissionMode) -> String {
     }
 }
 
+/// 二级列表里的一行：选中标记 + 标签 + 说明。
+fn picker_line(item: &PickerItem, selected: bool) -> Line<'static> {
+    let marker = if selected { "▸ " } else { "  " };
+    Line::from(vec![
+        Span::styled(marker, Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C))),
+        Span::raw(item.label.clone()),
+        Span::styled(
+            format!("  {}", item.detail),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])
+}
+
+/// 二级列表选完之后落地：切模型或恢复会话。
+fn apply_choice(
+    kind: PickKind,
+    value: String,
+    agent: &mut Agent,
+    journal: &Arc<Mutex<Journal>>,
+    app: &mut App,
+) {
+    match kind {
+        PickKind::Model => {
+            agent.set_model(value.clone());
+            if let Ok(mut journal) = journal.lock() {
+                journal.append_if_started(&seanbot_core::session::Record::Model {
+                    model: value.clone(),
+                });
+            }
+            app.set_model(&value);
+            app.push_line(format!("已切换模型：{value}"));
+        }
+        PickKind::Session => {
+            match seanbot_core::session::resume_session(std::path::Path::new(&value)) {
+                Ok((loaded, writer)) => {
+                    agent.restore(loaded.meta.system.clone(), loaded.history.clone());
+                    agent.set_model(loaded.model.clone());
+                    if let Ok(mut journal) = journal.lock() {
+                        journal.bind(loaded.meta.clone(), writer);
+                    }
+                    app.set_model(&loaded.model);
+                    app.push_line(format!(
+                        "已恢复会话 {}（{} 条消息）",
+                        loaded.meta.id,
+                        loaded.history.len()
+                    ));
+                    for warning in &loaded.warnings {
+                        app.push_line(format!("提示：{warning}"));
+                    }
+                }
+                Err(e) => app.push_line(format!("恢复会话失败：{e}")),
+            }
+        }
+    }
+}
+
 /// 浮窗里的一行：命令名（命中的字符高亮）+ 说明。
 fn popup_line(item: &slash::Match, selected: bool) -> Line<'static> {
     let command = slash::COMMANDS[item.index];
@@ -648,12 +821,13 @@ fn popup_line(item: &slash::Match, selected: bool) -> Line<'static> {
 }
 
 /// 执行斜杠命令。阶段 2d 先接上不需要列表界面的几条，/model 与 /resume 的列表在下一步。
-fn run_command(
+async fn run_command(
     name: &str,
     agent: &mut Agent,
     journal: &Arc<Mutex<Journal>>,
     cwd: &str,
     app: &mut App,
+    cfg: &Config,
 ) {
     match name {
         "/help" => {
@@ -682,8 +856,87 @@ fn run_command(
             repl::start_new(agent, journal, std::path::Path::new(cwd));
             app.push_line("已开始新会话".to_string());
         }
-        "/model" | "/resume" | "/mouse" => {
-            app.push_line(format!("{name}：列表/开关界面还在做（阶段 2d 未完）"));
+        "/model" => match agent.provider().list_models().await {
+            Ok(models) => {
+                let current = agent.model().to_string();
+                let items: Vec<PickerItem> = models
+                    .iter()
+                    .map(|model| PickerItem {
+                        label: format!(
+                            "{}{}",
+                            if model.id == current { "● " } else { "  " },
+                            model.id
+                        ),
+                        detail: format!(
+                            "{}k 上下文{}",
+                            model.context_window / 1000,
+                            if model.supports_tools {
+                                " · 支持工具"
+                            } else {
+                                ""
+                            }
+                        ),
+                        value: model.id.clone(),
+                    })
+                    .collect();
+                app.open_picker(PickKind::Model, "切换模型", items);
+            }
+            Err(e) => app.push_line(format!("获取模型列表失败：{e}")),
+        },
+        "/resume" => {
+            let listed = match seanbot_core::session::SessionStore::open_default() {
+                Ok(store) => store.list(std::path::Path::new(cwd)),
+                Err(e) => Err(e),
+            };
+            match listed {
+                Ok(sessions) if sessions.is_empty() => {
+                    app.push_line("当前目录没有历史会话".to_string());
+                }
+                Ok(sessions) => {
+                    let items: Vec<PickerItem> = sessions
+                        .iter()
+                        .map(|session| {
+                            let first = session.first_prompt.lines().next().unwrap_or_default();
+                            let short: String = first.chars().take(40).collect();
+                            PickerItem {
+                                label: if short.is_empty() {
+                                    session.id.clone()
+                                } else {
+                                    short
+                                },
+                                detail: format!("{} 条消息 · {}", session.messages, session.id),
+                                value: session.path.display().to_string(),
+                            }
+                        })
+                        .collect();
+                    app.open_picker(PickKind::Session, "恢复会话", items);
+                }
+                Err(e) => app.push_line(format!("列出会话失败：{e}")),
+            }
+        }
+        "/mouse" => {
+            let mut updated = cfg.clone();
+            updated.ui.mouse = !cfg.ui.mouse;
+            let saved = seanbot_core::config::config_path()
+                .ok()
+                .is_some_and(|path| updated.save_to(&path).is_ok());
+            if !saved {
+                app.push_line("鼠鼠标开关未能写回配置".to_string());
+            } else {
+                let enabled = updated.ui.mouse;
+                let result = if enabled {
+                    execute!(io::stdout(), crossterm::event::EnableMouseCapture)
+                } else {
+                    execute!(io::stdout(), crossterm::event::DisableMouseCapture)
+                };
+                match result {
+                    Ok(()) => app.push_line(format!(
+                        "鼠标支持：{}（开启后按住 Shift 才能选择文本）",
+                        if enabled { "开" } else { "关" }
+                    )),
+                    Err(e) => app.push_line(format!("切换鼠标支持失败：{e}")),
+                }
+            }
         }
         other => app.push_line(format!("未知命令：{other}")),
     }
@@ -768,7 +1021,12 @@ pub async fn run(
                     Some(Ok(event)) => match app.on_key(event) {
                         Action::Submit(text) => break Some(text),
                         Action::Quit => break None,
-                        Action::Command(name) => run_command(name, agent, journal, &cwd, &mut app),
+                        Action::Command(name) => {
+                            run_command(name, agent, journal, &cwd, &mut app, &cfg).await
+                        }
+                        Action::Choose(kind, value) => {
+                            apply_choice(kind, value, agent, journal, &mut app)
+                        }
                         _ => {}
                     },
                     Some(Err(_)) | None => break None,

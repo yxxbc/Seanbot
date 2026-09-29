@@ -521,7 +521,7 @@ impl ShellKind {
                     "    done\n",
                     "  fi\n",
                     "}\n",
-                    "trap '__sb_kill_descendants; __sb_kill_escaped; kill 0' EXIT\n",
+                    "trap '__sb_kill_descendants; __sb_kill_escaped; kill 0; exit 0' EXIT\n",
                 )
                 .to_string()
             }
@@ -824,7 +824,7 @@ mod tests {
         assert!(script.contains("ps -o pid=,ppid= -ax"), "{script}");
         assert!(script.contains("/proc/[0-9]*/environ"), "{script}");
         assert!(
-            script.contains("trap '__sb_kill_descendants; __sb_kill_escaped; kill 0' EXIT"),
+            script.contains("trap '__sb_kill_descendants; __sb_kill_escaped; kill 0; exit 0' EXIT"),
             "{script}"
         );
     }
