@@ -28,6 +28,8 @@ pub struct RenderStyle {
     pub animate: bool,
     pub color: bool,
     pub show_reasoning: bool,
+    /// 终端列数；`None` 表示每次绘制时查询终端尺寸。
+    pub cols: Option<u16>,
 }
 
 impl RenderStyle {
@@ -38,6 +40,7 @@ impl RenderStyle {
             animate: fancy,
             color: fancy,
             show_reasoning,
+            cols: None,
         }
     }
 }
@@ -261,6 +264,13 @@ impl<W: Write> Renderer<W> {
                 )
             }
         };
+        let cols = self
+            .style
+            .cols
+            .or_else(|| terminal::size().ok().map(|(c, _)| c))
+            .unwrap_or(80) as usize;
+        // 动画行必须短于终端宽度，否则折行后"清行"只清最后一行，画面会被刷满
+        let text = format::clip_width(&text, cols.saturating_sub(1).max(10));
         self.ensure_newline()?;
         let styled = self.dim(&text);
         queue!(
@@ -354,6 +364,7 @@ mod tests {
             animate: false,
             color: false,
             show_reasoning,
+            cols: Some(80),
         };
         let mut r = Renderer::new(Vec::new(), style, Box::new(move || t0));
         for e in events {
@@ -554,12 +565,37 @@ mod tests {
     }
 
     #[test]
+    fn spinner_fits_terminal_width() {
+        let t0 = Instant::now();
+        let style = RenderStyle {
+            animate: true,
+            color: false,
+            show_reasoning: false,
+            cols: Some(20),
+        };
+        let mut r = Renderer::new(Vec::new(), style, Box::new(move || t0));
+        r.handle(started(
+            "bash",
+            "cargo test --workspace -- --nocapture 很长的中文参数",
+        ))
+        .unwrap();
+        r.tick().unwrap();
+        let out = String::from_utf8(r.into_inner()).unwrap();
+        // 最后一次重绘在最后一个"清行"序列之后
+        let last = out.rsplit("\x1b[2K").next().unwrap();
+        let width = unicode_width::UnicodeWidthStr::width(format::sanitize(last).as_str());
+        assert!(width <= 19, "动画行宽 {width}：{last:?}");
+        assert!(last.contains('…'));
+    }
+
+    #[test]
     fn animated_mode_draws_spinner_and_color() {
         let t0 = Instant::now();
         let style = RenderStyle {
             animate: true,
             color: true,
             show_reasoning: false,
+            cols: Some(80),
         };
         let mut r = Renderer::new(Vec::new(), style, Box::new(move || t0));
         r.handle(AgentEvent::ThinkingStarted).unwrap();

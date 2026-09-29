@@ -3,6 +3,7 @@
 use std::{path::Path, time::Duration};
 
 use seanbot_provider::Usage;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// 12300 → "12.3k"，128000 → "128k"，1000000 → "1M"。
 pub fn tokens(n: u64) -> String {
@@ -97,6 +98,25 @@ pub fn clip(s: &str, max: usize) -> String {
     t
 }
 
+/// 按终端显示宽度截断（CJK 字符占两列），超出时以 `…` 结尾，结果不超过 `max` 列。
+pub fn clip_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut width = 0;
+    for c in s.chars() {
+        let w = UnicodeWidthChar::width(c).unwrap_or(0);
+        if width + w + 1 > max {
+            break;
+        }
+        out.push(c);
+        width += w;
+    }
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +174,13 @@ mod tests {
             sanitize("\x1b[32mCompiling\x1b[0m a\tb\r\x07"),
             "Compiling a    b"
         );
+    }
+
+    #[test]
+    fn clip_by_display_width() {
+        assert_eq!(clip_width("abc", 5), "abc");
+        assert_eq!(clip_width("abcdef", 5), "abcd…");
+        assert_eq!(clip_width("你好世界", 5), "你好…");
     }
 
     #[test]
