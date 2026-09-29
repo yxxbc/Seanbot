@@ -30,7 +30,7 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 | 数据目录 | `~/.seanbot/`（`config.toml` 权限 0600、`history` 输入历史、`sessions/` 会话记录、`kb/` 内置知识库、`kb-custom/` 外置知识库） |
 | 环境变量 | `DEEPSEEK_API_KEY` 优先于配置文件中的 key |
 
-**当前状态**：内核（工具、会话记录、知识库、常驻 bash 会话、联网、自更新）与行内 TUI（Markdown 渲染、斜杠命令、确认框、转录视图、吉祥物）都已可用；工具上限可在 `config.toml` 里调整（用 config 工具改）。本知识库只讲使用层面——设计文档在开发者的本地 `docs/` 目录里，不入库、也不随安装分发。
+**当前状态**：内核（工具、会话记录、知识库、常驻 bash 会话、联网、自更新）与行内 TUI（Markdown 渲染、斜杠命令、确认框、转录视图、吉祥物）都已可用；工具上限可在 `config.toml` 里调整（用 config 工具改）。本知识库只讲怎么用；设计与实现细节以源码为准。
 
 ## why author create Seanbot?
 
