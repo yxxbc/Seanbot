@@ -9,6 +9,7 @@
 // TODO(阶段 2c)：render_lines 供 TUI 回放、render_ansi 供非流式输出，接线后删掉这个 allow
 #![allow(dead_code)]
 
+use clap::builder::styling::{AnsiColor, Color as Paint, RgbColor, Style as PaintStyle};
 use std::fmt::Write as _;
 
 use ratatui::{
@@ -32,7 +33,33 @@ const MIN_TABLE_WIDTH: usize = 20;
 /// 注意 @BT@MarkdownStyle@BT@ 用的是 anstyle（@BT@clap::builder::styling::Style@BT@），
 /// 不是 ratatui 的 @BT@Style@BT@——改配色时要用 anstyle 的 API。
 pub fn style() -> MarkdownStyle {
-    MarkdownStyle::default().adapt()
+    brand_style().adapt()
+}
+
+/// 未按终端能力降级的品牌配色：标题金 #E6B85C、行内代码奶油 #F4E9D8、
+/// 代码语言标签珊瑚 #D95F4B，链接蓝下划线、次要元素暗灰。
+///
+/// 注意 @BT@MarkdownStyle@BT@ 的字段是 anstyle（@BT@clap::builder::styling::Style@BT@），
+/// 不是 ratatui 的 @BT@Style@BT@。
+pub fn brand_style() -> MarkdownStyle {
+    let gold = PaintStyle::new()
+        .fg_color(Some(Paint::Rgb(RgbColor(0xE6, 0xB8, 0x5C))))
+        .bold();
+    let cream = PaintStyle::new().fg_color(Some(Paint::Rgb(RgbColor(0xF4, 0xE9, 0xD8))));
+    let coral = PaintStyle::new().fg_color(Some(Paint::Rgb(RgbColor(0xD9, 0x5F, 0x4B))));
+    let dim = PaintStyle::new().fg_color(Some(Paint::Ansi(AnsiColor::BrightBlack)));
+    MarkdownStyle {
+        heading_inner: [gold; 6],
+        inline_code_inner: cream,
+        code_language: coral,
+        link_text: PaintStyle::new()
+            .fg_color(Some(Paint::Ansi(AnsiColor::Blue)))
+            .underline(),
+        link_url: dim,
+        rule: dim,
+        blockquote_outer: dim,
+        ..MarkdownStyle::default()
+    }
 }
 
 /// 一轮响应的流式渲染器。
@@ -205,6 +232,23 @@ mod tests {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn brand_palette_uses_the_project_colors() {
+        let style = brand_style();
+        assert_eq!(
+            style.heading_inner[0].get_fg_color(),
+            Some(Paint::Rgb(RgbColor(0xE6, 0xB8, 0x5C))),
+            "标题应当是金色"
+        );
+        assert_eq!(
+            style.inline_code_inner.get_fg_color(),
+            Some(Paint::Rgb(RgbColor(0xF4, 0xE9, 0xD8))),
+            "行内代码应当是奶油色"
+        );
+        // adapt() 会按终端能力降级，但不该 panic
+        let _ = style.adapt();
     }
 
     #[test]
