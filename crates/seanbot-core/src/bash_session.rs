@@ -422,10 +422,13 @@ impl Session {
         output.push('\n');
     }
 
-    /// 结束会话：先杀进程组（含后台子进程），再收掉脱离进程组的漏网进程。
+    /// 结束会话：先按 ppid 树收掉逃逸进程，再杀进程组，最后按标记补一遍。
     fn shutdown(&mut self) {
+        // 顺序很重要：逃逸进程此刻还挂在会话 shell 下（setsid 不改 ppid），
+        // 一旦端掉进程组，它们会被 reparent 到 init，就再也找不回来了。
+        kill_descendants(self.pid);
         kill_group(self.pid);
-        // 自己 setsid 脱离进程组的进程不在组里，按标记再扫一遍
+        // 自己 setsid 脱离进程组的进程不在组里：Linux 上还能按标记扫 /proc 补漏
         kill_escaped(&self.token);
         let _ = self.child.start_kill();
         let _ = self.child.try_wait();
@@ -489,10 +492,27 @@ impl ShellKind {
                 //    会话里的进程（含后台任务与逃逸进程）也会被 shell 自己收走。
                 concat!(
                     "exec 2>&1\n",
+                    // 按 ppid 树收掉子孙进程：macOS 读不到别的进程的环境变量（内核限制），
+                    // 这是找到「自己 setsid 逃逸」进程的唯一办法；必须在 kill 0 之前跑，
+                    // 那时逃逸进程还挂在会话 shell 下面。
+                    "__sb_kill_descendants() {\n",
+                    "  ps -o pid=,ppid= -ax 2>/dev/null | awk -v me=$$ '\n",
+                    "    { parent[$1] = $2 }\n",
+                    "    END {\n",
+                    "      mine[me] = 1\n",
+                    "      for (n = 0; n < 40; n++) {\n",
+                    "        grown = 0\n",
+                    "        for (p in parent) if (!(p in mine) && (parent[p] in mine)) { mine[p] = 1; grown = 1 }\n",
+                    "        if (!grown) break\n",
+                    "      }\n",
+                    "      for (p in mine) if (p != me) print p\n",
+                    "    }' | while read -r p; do kill -9 \"$p\" 2>/dev/null; done\n",
+                    "}\n",
+                    // 标记扫描：Linux 上能读到 /proc/<pid>/environ，可以补掉已经不挂在
+                    // 会话 shell 下（被 reparent）的漏网进程；macOS 上读不到，基本靠上一步。
                     "__sb_kill_escaped() {\n",
                     "  [ -n \"$SEANBOT_BASH_SESSION_TOKEN\" ] || return 0\n",
                     "  needle=\"SEANBOT_BASH_SESSION_TOKEN=$SEANBOT_BASH_SESSION_TOKEN\"\n",
-                    "  # Linux：直接读 /proc/<pid>/environ——ps 对别的进程不一定显示环境变量（CI 上就是这样）\n",
                     "  if [ -d /proc ]; then\n",
                     "    for environ in /proc/[0-9]*/environ; do\n",
                     "      grep -qzFx \"$needle\" \"$environ\" 2>/dev/null || continue\n",
@@ -500,12 +520,8 @@ impl ShellKind {
                     "      [ \"$pid\" = \"$$\" ] || kill -9 \"$pid\" 2>/dev/null\n",
                     "    done\n",
                     "  fi\n",
-                    "  # macOS 等没有 /proc 的场合：ps eww 能显示同用户进程的环境变量\n",
-                    "  ps eww -ax 2>/dev/null | grep -F \"$needle\" | grep -v grep \\\n",
-                    "    | awk -v me=$$ '$1 != me { print $1 }' \\\n",
-                    "    | while read -r p; do kill -9 \"$p\" 2>/dev/null; done\n",
                     "}\n",
-                    "trap '__sb_kill_escaped; kill 0' EXIT\n",
+                    "trap '__sb_kill_descendants; __sb_kill_escaped; kill 0' EXIT\n",
                 )
                 .to_string()
             }
@@ -560,6 +576,57 @@ fn spawn_stderr_reader(mut stderr: tokio::process::ChildStderr, tail: Arc<Mutex<
         }
     });
 }
+
+/// 收掉挂在会话 shell 下的所有子孙进程（含自己 setsid 的那类）：按 ppid 走一遍进程树。
+///
+/// 必须赶在 `kill_group` 之前调用——进程组一端掉，逃逸进程就被 reparent 到 init，
+/// 再也找不回来。为什么不靠标记扫环境变量：macOS 内核不允许读**别的进程**的环境
+/// （`KERN_PROCARGS2` 只对调用者自己返回，`ps eww` 同理），brew 里的进程工具走的也是同一套
+/// 系统调用，同样读不到；按 ppid 找则完全可用（`setsid` 不会改 ppid）。
+#[cfg(unix)]
+fn kill_descendants(pid: Option<u32>) {
+    let Some(root) = pid else { return };
+    let Ok(output) = std::process::Command::new("ps")
+        .args(["-o", "pid=,ppid=", "-ax"])
+        .output()
+    else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let pairs: Vec<(u32, u32)> = text
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.parse().ok()?,
+                fields.next()?.parse().ok()?,
+            ))
+        })
+        .collect();
+
+    // 从会话 shell 出发做一遍可达性搜索（进程数很少，迭代到不动点即可）
+    let mut marked = vec![root];
+    loop {
+        let before = marked.len();
+        for (pid, ppid) in &pairs {
+            if marked.contains(ppid) && !marked.contains(pid) {
+                marked.push(*pid);
+            }
+        }
+        if marked.len() == before {
+            break;
+        }
+    }
+    for pid in marked.iter().skip(1) {
+        unsafe {
+            libc::kill(*pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+/// Windows 靠 `taskkill /T` 杀整棵进程树，不需要额外遍历。
+#[cfg(windows)]
+fn kill_descendants(_pid: Option<u32>) {}
 
 /// 收掉"脱离进程组"的漏网进程：按本会话唯一的标记扫环境变量。
 ///
@@ -751,14 +818,16 @@ mod tests {
         );
     }
 
-    /// 退出兜底要能在 Linux 上找到「脱离进程组」的漏网进程：`ps` 对别的进程
-    /// 不保证显示环境变量，所以必须走 /proc。
+    /// 退出兜底要能收掉「脱离进程组」的漏网进程：macOS 读不到别的进程的环境变量，
+    /// 所以必须靠 ppid 树遍历；Linux 再用 /proc 标记扫描补漏。
     #[test]
-    fn warmup_reaps_escaped_processes_via_proc() {
+    fn warmup_reaps_escaped_processes() {
         let script = ShellKind::Posix.warmup();
+        assert!(script.contains("__sb_kill_descendants()"), "{script}");
+        assert!(script.contains("ps -o pid=,ppid= -ax"), "{script}");
         assert!(script.contains("/proc/[0-9]*/environ"), "{script}");
         assert!(
-            script.contains("trap '__sb_kill_escaped; kill 0' EXIT"),
+            script.contains("trap '__sb_kill_descendants; __sb_kill_escaped; kill 0' EXIT"),
             "{script}"
         );
     }

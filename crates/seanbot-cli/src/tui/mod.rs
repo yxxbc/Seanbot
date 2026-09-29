@@ -474,7 +474,7 @@ impl App {
         .split(area);
 
         frame.render_widget(
-            Paragraph::new(self.visible(rows[0].height as usize)),
+            Paragraph::new(self.activity_lines(rows[0].height as usize)),
             rows[0],
         );
         frame.render_widget(Paragraph::new(self.input_line()), rows[1]);
@@ -492,6 +492,21 @@ fn mode_label(mode: seanbot_core::PermissionMode) -> String {
         seanbot_core::PermissionMode::Yolo => "⚡ YOLO".to_string(),
         seanbot_core::PermissionMode::Confirm => "确认模式".to_string(),
     }
+}
+
+/// 把已经冻结的行写进终端滚动区：之后由终端自己滚动，不再占活动区。
+fn flush_scrollback(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+) -> io::Result<()> {
+    let pending = app.take_pending();
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let height = pending.len() as u16;
+    terminal.insert_before(height, |buffer| {
+        Paragraph::new(pending).render(buffer.area, buffer);
+    })
 }
 
 /// 主目录用 `~` 缩写，状态栏不至于太长。
@@ -713,11 +728,23 @@ mod tests {
     }
 
     #[test]
-    fn agent_events_land_in_the_activity_area() {
+    fn events_flow_into_the_scrollback() {
         let mut app = new_app();
         app.turn_started("看看仓库");
-        app.on_agent_event(AgentEvent::TextDelta("第一行\n第二".into()));
-        assert_eq!(app.activity.len(), 2, "换行切开，剩下的是流式尾巴");
+        let opened: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        assert!(
+            opened.iter().any(|l| l.contains("› 看看仓库")),
+            "{opened:?}"
+        );
+
+        // 助手正文：冻结的部分进滚动区，没冻结的留在尾部（两者合起来不丢内容）
+        app.on_agent_event(AgentEvent::TextDelta("- 第一\n- 第二\n".into()));
+        let mut all: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        all.extend(app.tail.iter().map(|l| l.to_string()));
+        let joined = all.join("\n");
+        assert!(joined.contains("第一"), "{joined}");
+        assert!(joined.contains("第二"), "{joined}");
+
         app.on_agent_event(AgentEvent::ToolFinished {
             call_id: "c1".into(),
             ok: true,
@@ -730,27 +757,37 @@ mod tests {
             steps: 2,
         });
         app.turn_finished();
-        let text: Vec<String> = app.activity.iter().map(|line| line.to_string()).collect();
-        assert!(text.iter().any(|l| l.contains("› 看看仓库")), "{text:?}");
+        let text: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
         assert!(
             text.iter().any(|l| l.contains("✓ Bash(cargo test)")),
             "{text:?}"
         );
         assert!(text.iter().any(|l| l.contains("步")), "{text:?}");
+        assert!(app.tail.is_empty(), "一轮结束后尾部清空：{:?}", app.tail);
         assert!(!app.running);
     }
 
-    /// 用 TestBackend 验证绘制：活动区、输入行、状态栏与光标位置（不需要真终端）。
+    /// 用 TestBackend 验证绘制：输入行、状态栏与光标位置（正文走滚动区，不在活动区）。
     #[test]
-    fn draws_activity_input_and_status_bar() {
+    fn draws_input_and_status_bar() {
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut app = new_app();
         app.turn_started("你好");
         app.on_agent_event(AgentEvent::TextDelta("回答一行\n".into()));
+        app.turn_finished();
         for c in "接着问".chars() {
             app.on_key(press(KeyCode::Char(c)));
         }
+        let scrolled: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        assert!(
+            scrolled.iter().any(|l| l.contains("› 你好")),
+            "用户消息进滚动区：{scrolled:?}"
+        );
+        assert!(
+            scrolled.iter().any(|l| l.contains("回答一行")),
+            "助手回复进滚动区：{scrolled:?}"
+        );
 
         let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
         terminal.draw(|frame| app.draw(frame)).unwrap();
@@ -765,24 +802,30 @@ mod tests {
         }
         // CJK 是宽字符：TestBackend 每个字符占两格，断言前先去掉空白
         let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
-        assert!(compact.contains("›你好"), "活动区要有用户消息：{text}");
-        assert!(compact.contains("回答一行"), "活动区要有助手回复：{text}");
         assert!(compact.contains("›接着问"), "输入行要有当前输入：{text}");
         assert!(compact.contains("确认模式"), "状态栏要有模式：{text}");
         assert!(compact.contains("deepseek-flash"), "状态栏要有模型：{text}");
+        assert!(
+            !compact.contains("回答一行"),
+            "已经写进滚动区的内容不该还留在活动区：{text}"
+        );
         let cursor = terminal.get_cursor_position().unwrap();
         assert_eq!(cursor.y, 10, "光标应在输入行（倒数第二行）：{cursor:?}");
     }
 
     #[test]
-    fn visible_keeps_the_tail_and_the_streaming_line() {
+    fn desired_height_follows_the_tail_and_the_terminal() {
         let mut app = new_app();
-        for i in 0..20 {
-            app.push_line(format!("第 {i} 行"));
-        }
-        app.on_agent_event(AgentEvent::TextDelta("尾巴".into()));
-        let lines = app.visible(5);
-        assert_eq!(lines.len(), 5, "只保留可见的最后几行");
-        assert!(lines.last().unwrap().to_string().contains("尾巴"));
+        assert_eq!(
+            app.desired_height(40),
+            5,
+            "空尾部：3 行正文 + 输入行 + 状态栏"
+        );
+        assert_eq!(app.desired_height(8), 4, "小终端下不超过一半高度");
+        app.on_agent_event(AgentEvent::TextDelta(
+            "未闭合的代码块\n```\n一\n二\n".into(),
+        ));
+        let tall = app.desired_height(40);
+        assert!((4..=20).contains(&tall), "高度应当在 4..=20：{tall}");
     }
 }

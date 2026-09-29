@@ -14,6 +14,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 ### 新增
 
 - **行内 TUI（阶段 2a 骨架）**：`sean` 默认进入 ratatui 行内界面——raw mode + bracketed paste + panic 兜底还原终端、行内 viewport、单行输入框（光标移动/删除、Ctrl+A/E/U/C）、状态栏（模型 · 目录 · 确认模式/YOLO）、活动区实时显示助手流式正文与工具行；Ctrl+D 或连按两次 Ctrl+C 退出，Esc / Ctrl+C 中断本轮
+- TUI 滚动区（阶段 2c）：已经写完的内容用 `Terminal::insert_before` 写进终端滚动区——终端原生滚动、选择、复制都能用；活动区只保留还没冻结的流式尾部，高度随内容变化且不超过终端一半；助手正文在 TUI 内走同一套 Markdown 渲染
 - 交互模式的 Markdown 渲染：终端里走 theway-markdown 流式渲染（品牌配色：标题金、行内代码奶油、代码语言珊瑚），重定向到文件时仍是原始 Markdown
 - 迁移期逃生门：设 `SEANBOT_REPL=1` 回到逐行 REPL；`sean` 在 stdout 不是终端时报错并提示改用 `sean -p`
 - bash 常驻会话：`bash` 新增 `session` 参数，同一个会话里 `cd`、环境变量、函数都会保留，适合"先 cd 再跑一串命令"这类连续操作；不带 `session` 时仍是一次性进程，行为不变
