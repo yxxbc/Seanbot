@@ -1,0 +1,38 @@
+# ===== Rust / Cargo 构建产物 =====
+/target
+*.rs.bk
+*.pdb
+
+# ===== macOS 系统文件 =====
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.apdisk
+
+# ===== 编辑器 / IDE =====
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.iml
+
+# ===== 环境变量与密钥（如 DEEPSEEK_API_KEY） =====
+.env
+.env.*
+!.env.example
+
+# ===== 日志与临时文件 =====
+*.log
+*.tmp
+tmp/
+
+# ===== 本地文档（不提交） =====
+docs/Seanbot/
+docs/superpowers/
