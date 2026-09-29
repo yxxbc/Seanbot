@@ -25,7 +25,7 @@ CLI renderer tests use `insta` inline snapshots in `crates/seanbot-cli/src/rende
 Cargo workspace with three crates and a strictly one-way dependency chain: `seanbot-cli → seanbot-core → seanbot-provider`. The binary lives in `crates/seanbot-cli/` (package `seanbot-cli`, `[[bin]] name = "sean"`).
 
 - **seanbot-provider** — vendor layer. `Provider` trait (`info`, `list_models`, `stream`) returning `StreamChunk`s. Vendors are data-driven `ProviderDescriptor`s (`builtin_providers()`, `create()`); a new OpenAI-compatible vendor is just a new descriptor, vendor differences go in `Quirks`. Streaming tool-call fragments are assembled inside the provider; the core only ever sees complete `ToolCall`s with raw-string JSON arguments. Retries (3×, exponential backoff, honor `Retry-After`) happen only before the first chunk arrives. Knows nothing about agents or tool execution.
-- **seanbot-core** — the agent loop, tool registry, the four builtin tools (`read`, `edit`, `bash`, `search`), bash denylist, config. Must never touch the terminal: its only UI surfaces are the `AgentEvent` stream (mpsc) and the `PermissionHandler` trait, so a future Tauri desktop app can reuse it. Entry point is `Agent::run_turn(input, events, cancel)`.
+- **seanbot-core** — the agent loop, tool registry, the builtin tools (`bash`, `config`, `edit`, `kb_*`, `perceive`, `read`, `search`, `web_*`), the knowledge base, bash denylist, config. Must never touch the terminal: its only UI surfaces are the `AgentEvent` stream (mpsc) and the `PermissionHandler` trait, so a future Tauri desktop app can reuse it. Entry point is `Agent::run_turn(input, events, cancel)`.
 - **seanbot-cli** — input (rustyline) and rendering (crossterm spinners, ✓/✗ tool lines, usage line) only.
 
 Invariants that span multiple components:
@@ -34,6 +34,7 @@ Invariants that span multiple components:
 - **Prefix-cache stability** (DeepSeek caches automatically): system prompt fixed for the whole session (no timestamps; `/clear` does not rebuild it), history is append-only, tool definitions serialized in identical order every request (`ToolRegistry` is a `BTreeMap`).
 - **Builtin tools are immutable**: registering a tool whose name collides with a builtin is an error. `ToolSource` distinguishes `Builtin | AgentCreated | Plugin`.
 - **`edit` requires a prior `read`** in the same session with unchanged file content (a length + hash fingerprint in `ReadTracker`; mtime is deliberately ignored so editor/formatter saves don't invalidate reads). Multi-match errors list occurrence line numbers and `occurrence` selects the Nth (mutually exclusive with `replace_all`); read-output line-number prefixes are stripped only as a fallback. Error text is deliberately terse (one line) — keep it that way.
+- **The builtin knowledge base is read-only**: `<data_dir>/kb` is released from embedded content (built by `crates/seanbot-core/build.rs` from the repo `kb/`, so adding files needs no code change) and updated only by `kb_update` / `sean kb update`; `edit` and `bash` refuse to touch it, while `<data_dir>/kb-custom` stays writable via `kb_add`/`kb_edit`. Releasing only fills in missing files — never overwrite, or a remote update would be reverted by an older embedded copy. `kb/index.json` must list exactly the files under `kb/` (a test enforces it).
 - **bash denylist** is always enforced, before `PermissionHandler`, and can't be bypassed; tokenization failure means deny. Matching splits on `; && || | \n` and background `&`, extracts `$(...)`/backticks, strips env assignments and wrapper commands, basename-matches by word prefix, and blocks `curl|wget` piped into a shell. See spec §5.3 for exact rules.
 
 Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`); `DEEPSEEK_API_KEY` overrides the config key. Default model is `deepseek-flash`; DeepSeek requires `reasoning_content` to be echoed back on every request that carries tools (`Quirks::echo_reasoning`).
@@ -42,7 +43,7 @@ Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`
 
 - User-facing UI text is Chinese; tool names and commands stay English.
 - Library crates use `thiserror`; the CLI uses `anyhow`.
-- Out of scope for the MVP (don't build unless asked): TUI/desktop, knowledge base, personas, subagents, plugins, context compaction, Markdown rendering. Session persistence (`-c`/`-r`/`/resume`, `seanbot-core::session`) and the tool confirmation UI are already implemented.
+- Out of scope for the MVP (don't build unless asked): TUI/desktop, personas, subagents, plugins, context compaction, Markdown rendering. Session persistence (`-c`/`-r`/`/resume`, `seanbot-core::session`) and the tool confirmation UI are already implemented.
 
 ## Commit conventions (hard-enforced)
 
