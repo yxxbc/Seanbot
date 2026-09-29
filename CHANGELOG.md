@@ -24,6 +24,8 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - bash 命令黑名单，可在 `~/.seanbot/config.toml` 的 `[tools.bash] deny` 中调整
 - 每轮结束显示 token 用量与上下文缓存命中量；执行中按 Ctrl+C 可中断当前任务并继续对话
 - `--trace <文件>` 可选择记录模型实际请求体、响应、上下文长度分布、耗时与 token 用量的 JSONL 文件；文件权限为 `0600`
+- 安装脚本 `scripts/install.sh`（macOS / Linux）与 `scripts/install.ps1`（Windows），下载后校验 SHA256
+- 开发脚本：`scripts/test.sh` 一键检查，`scripts/release.sh` 一键改版本号并发布；CI 在三个平台上运行检查，推送标签后自动构建并发布 Release
 
 ### 修复
 
