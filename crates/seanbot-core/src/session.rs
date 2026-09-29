@@ -112,6 +112,8 @@ pub enum Record {
 pub struct SessionSummary {
     pub id: String,
     pub path: PathBuf,
+    /// 会话创建时的工作目录：目录标识可能被不同目录共用，用它区分归属
+    pub cwd: PathBuf,
     pub first_prompt: String,
     pub updated_at: SystemTime,
     pub messages: usize,
@@ -188,8 +190,11 @@ impl SessionStore {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            // 单个文件损坏不影响列出其他会话
-            if let Ok(summary) = summarize(&path) {
+            // 单个文件损坏不影响列出其他会话；目录标识可能被多个目录共用（如 my-proj 与 my/proj），
+            // 只列出 meta.cwd 指向当前工作目录的会话
+            if let Ok(summary) = summarize(&path)
+                && same_dir(&summary.cwd, cwd)
+            {
                 out.push(summary);
             }
         }
@@ -361,10 +366,17 @@ fn summarize(path: &Path) -> Result<SessionSummary, SessionError> {
     Ok(SessionSummary {
         id: loaded.meta.id,
         path: path.to_path_buf(),
+        cwd: loaded.meta.cwd.clone(),
         first_prompt,
         updated_at: fs::metadata(path)?.modified()?,
         messages: loaded.history.len(),
     })
+}
+
+/// 两个路径是否指向同一处：先比真实路径，路径不存在时退回字面比较。
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    real(a) == real(b)
 }
 
 /// 把多行文本压成一行并截到 `max` 个字符（超出时以 … 结尾）。
@@ -634,6 +646,30 @@ mod tests {
         assert!(!list[0].first_prompt.contains('\n'));
         assert_eq!(list[1].first_prompt, "旧的问题");
         assert_eq!(store.latest(cwd).unwrap().unwrap().id, new.id());
+    }
+
+    #[test]
+    fn list_filters_sessions_of_colliding_directories() {
+        let (_d, store) = store();
+        let a = Path::new("/nonexistent-seanbot/my-proj");
+        let b = Path::new("/nonexistent-seanbot/my/proj");
+        assert_eq!(dir_key(a), dir_key(b), "前提：两个目录共用一个会话桶");
+
+        let mut in_a = store.create(meta(a)).unwrap();
+        in_a.append(&msg(Message::user("项目 A 的问题"))).unwrap();
+        let in_b = store.create(meta(b)).unwrap();
+
+        // 目录桶被共用时，列表与“最近”只能看到本目录的会话
+        let list = store.list(a).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, in_a.id());
+        assert_eq!(list[0].cwd, a);
+        assert_eq!(store.latest(a).unwrap().unwrap().id, in_a.id());
+        assert_eq!(store.latest(b).unwrap().unwrap().id, in_b.id());
+        assert_eq!(store.list(b).unwrap()[0].cwd, b);
+
+        // 明确给出 ID 时仍可跨目录找到（`-r ID` 语义不变）
+        assert_eq!(store.find(b, &in_a.id()).unwrap(), in_a.path());
     }
 
     #[test]
