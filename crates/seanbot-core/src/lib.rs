@@ -21,7 +21,7 @@ mod tool;
 
 pub use agent::{Agent, AgentError, DEFAULT_MAX_STEPS};
 pub use denylist::Denylist;
-pub use event::{AgentEvent, TurnSummary};
+pub use event::{AgentEvent, TurnSummary, UserEvent};
 pub use permission::{AllowAll, Decision, NonInteractive, PermissionHandler, PermissionRequest};
 pub use prompt::{PromptEnv, system_prompt};
 pub use registry::{RegistryError, ToolRegistry};
