@@ -27,7 +27,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - Windows 上的常驻会话：有 Git Bash 时走同一套 POSIX 逻辑，否则用 PowerShell（`-Command -` 从 stdin 读命令、哨兵带回 `$LASTEXITCODE` 与 `Get-Location`）
 - 连"主动脱离进程组"的进程也收得掉（例如会话里 `setsid` 起的守护进程）：每个会话带唯一标记进环境，关闭时 Rust 端按标记扫一遍（Linux 读 `/proc/*/environ`，macOS 用 `ps eww`）发 SIGKILL；会话 shell 的 `EXIT` 陷阱里也扫一遍，所以父进程被 SIGKILL、Rust 端没机会执行时同样不留残渣
 - 新工具 `bash_session`（`list` / `close` / `close_all`）管理常驻会话；`tools.bash.max_sessions`（默认 8）限制同时开几个，可用 `config` 工具调整
-- **退出必定清理，绝不留孤儿进程**：四层保证——CLI 每条退出路径显式 `shutdown()`、`BashSessions` 的 `Drop` 杀进程组、会话 shell 挂着 `trap 'kill 0' EXIT` 且 stdin 管道 EOF 时自杀（父进程被 SIGKILL 也生效）、每个会话独占进程组 `killpg(SIGKILL)` 连后台任务一起收；命令超时或取消直接关掉该会话
+- **退出必定清理，绝不留孤儿进程**：六层保证——CLI 每条退出路径显式 `shutdown()`、`BashSessions` 的 `Drop` 杀进程组、**进程级退出钩子**（每个会话登记进进程级名单，`libc::atexit` 里按同样顺序收尾，所以 `std::process::exit()` 跳过析构也照样收干净）、**会话 shell 看门狗**（父进程被 SIGKILL 时，会话 shell 自己 `kill -KILL 0` 端掉整组）、会话 shell 的 `trap 'kill 0' EXIT` 与 stdin EOF 兜底、每个会话独占进程组 `killpg(SIGKILL)` 并按 ppid 树/标记扫掉 `setsid` 逃逸进程；命令超时或取消直接关掉该会话（设计说明见内置知识库条目 `AboutSeanbot/02-ProcessCleanup.md`）
 - 清理验证脚本 `scripts/tests/bash_session_test.sh`：探针跑 drop / exit（跳过析构）/ closeall / timeout 四条退出路径，每个会话里都留一个 `sleep 300` 后台任务，最后按 pid 与进程标记双重扫描 `ps`，任何残留都判失败
 - 系统提示词外置到仓库根的 `prompt/`（`identity.md` / `environment.md` / `workflow.md`，用 `{{占位符}}` 填运行期值），编译期内嵌；改提示词只动 markdown、不动 Rust，并有测试兜住没被替换的占位符
 - 子目录指令按需注入：`read` / `edit` 访问子目录里的文件时，把它所在目录链上尚未注入过的 `AGENTS.md` / `CLAUDE.md` 随该次工具结果注入一次（同一个文件只注入一次），走到某个模块才看到该模块的约定
@@ -58,7 +58,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 脚本里 `$var` 紧跟中文标点的写法在 macOS 自带的 bash 3.2（非 UTF-8 locale 时）会被当成变量名的一部分，报 `unbound variable`：统一改成 `${var}`（`scripts/release.sh --dry-run` 在 macOS 上因此会直接报错退出）
 - `scripts/tests/bash_session_test.sh` 的残留进程扫描会把自己（`ps` 管道与脚本进程同样带着标记环境）当成残留：改为按工具名 + 脚本路径 + 自身 pid 排除
 - `crates/seanbot-core/src/bash_session.rs` 的 Linux 分支里嵌套 `if` 未折叠，clippy 在 ubuntu 上直接失败（本机 macOS 不编译该分支，只有 CI 能发现）：改成 let-chain
-- 常驻会话的逃逸进程（`setsid` 脱离进程组）回收：Unix 侧的按标记扫描不可靠——macOS 的 `ps eww -ax` 对这类进程不显示环境变量（实测），Linux 上 shell 的 EXIT 陷阱也没兜住（CI 的 `escape+exit` 残留）。先把 shell 兜底改成优先读 `/proc/<pid>/environ`（并新增「warmup 脚本必须是合法 bash」的单元测试），同时把该场景的断言限定在 Windows（job object 可靠），Unix 侧的可靠回收待补；判活改成忽略僵尸进程（`kill -0` 对僵尸也返回成功）
+- 常驻会话的逃逸进程（`setsid` 脱离进程组）回收：Unix 侧的按标记扫描不可靠——macOS 的 `ps eww -ax` 对这类进程不显示环境变量（实测），Linux 上 shell 的 EXIT 陷阱也没兜住（CI 的 `escape+exit` 残留）。先把 shell 兜底改成优先读 `/proc/<pid>/environ`（并新增「warmup 脚本必须是合法 bash」的单元测试），同时把该场景的断言限定在 Windows（job object 可靠）；Unix 侧后来改走 **ppid 树回收**（`setsid` 不改 ppid，趁逃逸进程还挂在会话 shell 下先收，再端进程组），并配进程级退出钩子与会话 shell 看门狗，`exit` / `escape+exit` 场景在 macOS 上也全绿；判活改成忽略僵尸进程（`kill -0` 对僵尸也返回成功）
 - 指令文件「远到近」的用例改用路径比较，Windows 上不再因为 `\` 分隔符断言失败
 - 官网「八个内置工具」等文案与 TUI 状态过期：工具改为按分组描述（内核 / 联网 / 知识库 / 技能 / 配置），补上指令文件、技能与知识库三条能力；TUI 标注为「开发中」（ratatui 全屏界面尚未落地）
 - 官网 `og:image` 之前是相对路径的 SVG，多数平台既不识别相对地址也不渲染 SVG；改为绝对地址的 `assets/og.png`（1200×630），并补 `og:locale` / `og:site_name` / `twitter:card` 与 `canonical`
