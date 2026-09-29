@@ -73,8 +73,7 @@ impl Agent {
         permission: Arc<dyn PermissionHandler>,
         cwd: PathBuf,
     ) -> Self {
-        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let system = prompt::system_prompt(&cwd, std::env::consts::OS, &date);
+        let system = prompt::system_prompt(&prompt::PromptEnv::detect(&cwd));
         let denylist = Denylist::new(&config.tools.bash.deny);
         let model = model.into();
         let runtime = shared_runtime(RuntimeState {
