@@ -28,13 +28,12 @@ use std::{
 use anyhow::Context;
 use crossterm::{
     event::{
-        DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
-        KeyEventKind, KeyModifiers,
+        DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use futures::StreamExt;
 use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
@@ -1367,6 +1366,18 @@ fn shorten_home(cwd: &str) -> String {
     }
 }
 
+/// 取一个待处理的终端事件：**在当前线程**上读。
+///
+/// 行内视口的 `insert_before` 要读 CPR（光标位置查询）的回包，也是在当前线程上读；
+/// 一旦再开一个读取者（crossterm 的 `EventStream` 会起读线程），两者就抢同一个终端输入，
+/// CPR 读超时——用户看到的 `The cursor position could not be read` 就是这么来的。
+fn poll_event() -> Option<Event> {
+    if !crossterm::event::poll(Duration::ZERO).unwrap_or(false) {
+        return None;
+    }
+    crossterm::event::read().ok()
+}
+
 /// 启动 TUI。返回码沿用 CLI 约定。
 pub async fn run(
     agent: &mut Agent,
@@ -1401,7 +1412,6 @@ pub async fn run(
     )
     .context("初始化行内 TUI 失败")?;
     let mut viewport_height = MIN_VIEWPORT_HEIGHT;
-    let mut events = EventStream::new();
     let mut ticker = tokio::time::interval(TICK);
 
     loop {
@@ -1421,25 +1431,34 @@ pub async fn run(
         flush_scrollback(&mut terminal, &mut app)?;
         terminal.draw(|frame| app.draw(frame))?;
         let prompt = loop {
+            // 按键在本线程处理（与 CPR 查询同一个线程，避免两个读取者）
+            let mut decided: Option<Option<String>> = None;
+            while let Some(event) = poll_event() {
+                match app.on_key(event) {
+                    Action::Submit(text) => {
+                        decided = Some(Some(text));
+                        break;
+                    }
+                    Action::Quit => {
+                        decided = Some(None);
+                        break;
+                    }
+                    Action::Command(name) => {
+                        run_command(name, agent, journal, &cwd, &mut app, cfg).await
+                    }
+                    Action::OpenTranscript => {
+                        transcript::show(&mut terminal, &mut app, cfg.ui.mouse).await?;
+                    }
+                    Action::Choose(kind, value) => {
+                        apply_choice(kind, value, agent, journal, &mut app)
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(decided) = decided {
+                break decided;
+            }
             tokio::select! {
-                maybe = events.next() => match maybe {
-                    Some(Ok(event)) => match app.on_key(event) {
-                        Action::Submit(text) => break Some(text),
-                        Action::Quit => break None,
-                        Action::Command(name) => {
-                            run_command(name, agent, journal, &cwd, &mut app, cfg).await
-                        }
-                        Action::OpenTranscript => {
-                            transcript::show(&mut terminal, &mut app, &mut events, cfg.ui.mouse)
-                                .await?;
-                        }
-                        Action::Choose(kind, value) => {
-                            apply_choice(kind, value, agent, journal, &mut app)
-                        }
-                        _ => {}
-                    },
-                    Some(Err(_)) | None => break None,
-                },
                 Some(hint) = hint_rx.recv() => app.set_hint(hint),
                 _ = ticker.tick() => app.tick(),
             }
@@ -1460,6 +1479,19 @@ pub async fn run(
         app.turn_started(&prompt);
         let mut turn = std::pin::pin!(agent.run_turn(prompt, tx, cancel.clone()));
         loop {
+            while let Some(event) = poll_event() {
+                match app.on_key(event) {
+                    Action::Cancel | Action::Quit => {
+                        if app.running {
+                            cancel.cancel();
+                        } else {
+                            terminal.show_cursor()?;
+                            return Ok(());
+                        }
+                    }
+                    _ => {}
+                }
+            }
             flush_scrollback(&mut terminal, &mut app)?;
             terminal.draw(|frame| app.draw(frame))?;
             tokio::select! {
@@ -1479,21 +1511,6 @@ pub async fn run(
                 Some(ask) = perm_rx.recv() => {
                     // 内核在等这次授权：弹确认框（Esc/中断/本轮结束都会回传拒绝）
                     app.open_confirm(ask, rules.clone());
-                }
-                maybe = events.next() => {
-                    if let Some(Ok(event)) = maybe {
-                        match app.on_key(event) {
-                            Action::Cancel | Action::Quit => {
-                                if app.running {
-                                    cancel.cancel();
-                                } else {
-                                    terminal.show_cursor()?;
-                                    return Ok(());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
                 }
                 _ = ticker.tick() => app.tick(),
             }

@@ -6,13 +6,12 @@ use std::{collections::HashSet, io, time::Duration};
 
 use crossterm::{
     event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode, KeyEventKind,
-        KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        MouseButton, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen},
 };
-use futures::StreamExt;
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
@@ -249,7 +248,6 @@ fn first_line(text: &str) -> String {
 pub async fn show(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut crate::tui::App,
-    events: &mut EventStream,
     mouse: bool,
 ) -> io::Result<()> {
     let mut out = io::stdout();
@@ -257,7 +255,7 @@ pub async fn show(
     if mouse {
         let _ = execute!(out, EnableMouseCapture);
     }
-    let result = run(terminal, app, events).await;
+    let result = run(terminal, app).await;
     if mouse {
         let _ = execute!(out, DisableMouseCapture);
     }
@@ -269,7 +267,6 @@ pub async fn show(
 async fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut crate::tui::App,
-    events: &mut EventStream,
 ) -> io::Result<()> {
     let mut ticker = tokio::time::interval(Duration::from_millis(200));
     loop {
@@ -317,17 +314,13 @@ async fn run(
             );
         })?;
 
-        tokio::select! {
-            maybe = events.next() => match maybe {
-                Some(Ok(event)) => {
-                    if handle_event(event, app, &last_map, height) {
-                        return Ok(());
-                    }
-                }
-                Some(Err(_)) | None => return Ok(()),
-            },
-            _ = ticker.tick() => {}
+        // 按键同样在本线程读（见 tui::poll_event 的说明）
+        while let Some(event) = super::poll_event() {
+            if handle_event(event, app, &last_map, height) {
+                return Ok(());
+            }
         }
+        ticker.tick().await;
     }
 }
 
