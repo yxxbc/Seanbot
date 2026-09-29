@@ -2,6 +2,7 @@
 
 mod descriptor;
 mod error;
+mod openai;
 mod provider;
 mod types;
 
