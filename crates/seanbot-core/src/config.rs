@@ -55,11 +55,33 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ProviderConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    /// 手写 `Debug` 而非 derive：`api_key` 打码，避免 `{:?}` / 日志漏出明文密钥。
+    /// `Config` 仍为 derive，其 `Debug` 会转发到这里的实现，因此整体也是打码的。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("api_key", &self.api_key.as_deref().map(mask_key))
+            .finish()
+    }
+}
+
+/// 密钥打码：保留前 4 个字符便于辨认，其余以 `…` 代替；长度不足 5 则整体隐藏。
+fn mask_key(key: &str) -> String {
+    const VISIBLE: usize = 4;
+    let mut chars = key.chars();
+    let head: String = chars.by_ref().take(VISIBLE).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        "****".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -250,5 +272,23 @@ mod tests {
             Some("from-file")
         );
         assert_eq!(cfg.resolve_api_key("other", None), None);
+    }
+
+    #[test]
+    fn debug_masks_api_key() {
+        let mut cfg = Config::default();
+        cfg.set_api_key("deepseek", "sk-1234567890".into());
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("sk-1234567890"), "{rendered}");
+        assert!(rendered.contains("sk-1…"), "{rendered}");
+    }
+
+    #[test]
+    fn debug_hides_short_api_key() {
+        let mut cfg = Config::default();
+        cfg.set_api_key("deepseek", "sk-a".into());
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("sk-a"), "{rendered}");
+        assert!(rendered.contains("****"), "{rendered}");
     }
 }
