@@ -1,11 +1,15 @@
 //! bash 常驻会话：可以开多个命名会话，程序退出时必须全部清理——**绝不留孤儿进程**。
 //!
-//! 清理的四层保证：
+//! 清理的六层保证：
 //! 1. **显式**：CLI 的每条退出路径都会调 `shutdown()`；工具 `bash_session close_all` 也能关
 //! 2. **Drop**：`BashSessions` 被丢弃时逐个结束进程组（正常返回、报错返回、panic 展开都会走到）
 //! 3. **EOF 兜底**：子 shell 的 stdin 是我们持有的管道；父进程无论怎么消失（包括被 SIGKILL），
-//!    管道写端都会关闭，shell 读到 EOF 自行退出
+//!    管道写端都会关闭，shell 读到 EOF 自行退出（它自己启动的后台作业不吃 EOF，所以只算兜底）
 //! 4. **进程组**：每个会话独占一个进程组，关闭时 `killpg(SIGKILL)`，连同它启动的后台子进程一起收掉
+//! 5. **退出钩子**：会话会登记到一个进程级名单，`libc::atexit` 里再收一遍——
+//!    `std::process::exit()` 跳过 Drop，但会跑退出钩子，"程序自己退出"的路不靠子 shell 自觉
+//! 6. **看门狗**：父进程被硬杀（SIGKILL）时退出钩子也跑不到，会话 shell 就自己盯着父进程，
+//!    发现它没了立刻 `kill -KILL 0` 端掉整个进程组（连同看门狗自己）
 //!
 //! 注意第 3 层管不到"会话里跑起来的、已经脱离进程组的孙进程"（例如自己 setsid 的守护进程）；
 //! 第 4 层能收掉留在同一进程组里的后台任务。测试脚本 scripts/tests/bash_session_test.sh 专门验证这些。
@@ -284,6 +288,8 @@ impl Session {
             .write(&kind.warmup())
             .await
             .map_err(|e| SessionError::Spawn(e.to_string()))?;
+        // 会话跑起来了才登记：`std::process::exit()` 之类跳过 Drop 的退出路径也收得掉它
+        exit_guard::register(session.pid, &session.token);
         Ok(session)
     }
 
@@ -432,6 +438,8 @@ impl Session {
         kill_escaped(&self.token);
         let _ = self.child.start_kill();
         let _ = self.child.try_wait();
+        // 已经收干净了：从退出钩子的名单里划掉，免得多收一遍（也免得 pid 被复用后误伤）
+        exit_guard::unregister(&self.token);
         // 关掉写端：即使 kill 没送到，shell 也会读到 EOF 自行退出
         self.stdin = None;
     }
@@ -490,8 +498,13 @@ impl ShellKind {
                 //    - kill 0 收掉整个进程组
                 //    这样即使父进程被 SIGKILL、Rust 端清理代码没机会跑，
                 //    会话里的进程（含后台任务与逃逸进程）也会被 shell 自己收走。
+                // 3) 看门狗：父进程被硬杀时上面两层都赶不上——Rust 端连退出钩子都跑不到，
+                //    会话 shell 启动的后台作业又不吃 EOF；所以让一个后台子 shell 盯着
+                //    父进程与自己的存活，谁没了就 kill -KILL 0 把整组端掉（含它自己）。
                 concat!(
                     "exec 2>&1\n",
+                    // 父进程（Seanbot）的 pid：看门狗靠它判断"外面还在不在"
+                    "__sb_parent=$PPID\n",
                     // 按 ppid 树收掉子孙进程：macOS 读不到别的进程的环境变量（内核限制），
                     // 这是找到「自己 setsid 逃逸」进程的唯一办法；必须在 kill 0 之前跑，
                     // 那时逃逸进程还挂在会话 shell 下面。
@@ -522,6 +535,9 @@ impl ShellKind {
                     "  fi\n",
                     "}\n",
                     "trap '__sb_kill_descendants; __sb_kill_escaped; kill 0; exit 0' EXIT\n",
+                    // 看门狗：`$$` 在子 shell 里仍是会话 shell 的 pid；两者都还在就继续等，
+                    // 任一消失（父进程被硬杀 / 会话 shell 被外部杀掉）就端掉整组——SIGKILL 不可忽略
+                    "( while kill -0 \"$$\" 2>/dev/null && kill -0 \"$__sb_parent\" 2>/dev/null; do sleep 1; done; kill -KILL 0 ) >/dev/null 2>&1 &\n",
                 )
                 .to_string()
             }
@@ -771,6 +787,70 @@ fn kill_group(pid: Option<u32>) {
     }
 }
 
+/// 进程级兜底：`std::process::exit()` 会跳过 Drop，但会跑 `atexit` 钩子。
+///
+/// 没这层的话，"程序自己退出"就得指望子 shell 读到 stdin EOF 后自觉收尾——实测靠不住
+/// （会话 shell 启动的后台作业被 bash 重定向到 /dev/null，根本不看 stdin），所以退出前
+/// 自己动手，按 `shutdown()` 同样的顺序把登记过的会话收掉。
+/// 万一某个平台在退出时不跑 atexit，也还有 Drop、看门狗、EOF 三层接着。
+mod exit_guard {
+    use std::sync::{Mutex, Once};
+
+    use super::{kill_descendants, kill_escaped, kill_group};
+
+    /// 活跃会话：进程组 pid + 会话标记（标记用来补掉已经脱离进程组的进程）
+    static ACTIVE: Mutex<Vec<(Option<u32>, String)>> = Mutex::new(Vec::new());
+    static HOOK: Once = Once::new();
+
+    /// 记下新会话；第一次调用时装好退出钩子。
+    pub(super) fn register(pid: Option<u32>, token: &str) {
+        HOOK.call_once(|| unsafe {
+            libc::atexit(cleanup);
+        });
+        if let Ok(mut active) = ACTIVE.lock() {
+            active.retain(|(_, item)| item != token);
+            active.push((pid, token.to_string()));
+        }
+    }
+
+    /// 会话已经收干净了，从名单里划掉（免得退出时再杀一遍，也免得 pid 被复用后误伤）。
+    pub(super) fn unregister(token: &str) {
+        if let Ok(mut active) = ACTIVE.lock() {
+            active.retain(|(_, item)| item != token);
+        }
+    }
+
+    /// 这个会话还在退出钩子的名单里吗（只给单测用）。
+    #[cfg(test)]
+    pub(super) fn is_tracked(token: &str) -> bool {
+        ACTIVE
+            .lock()
+            .map(|active| active.iter().any(|(_, item)| item == token))
+            .unwrap_or(false)
+    }
+
+    /// 退出钩子的实际动作；单测直接调它，免得真把测试进程退掉。
+    pub(super) fn cleanup_now() {
+        // 退出期间别的线程可能正持着锁：拿不到就算了，各自的 shutdown/Drop 会兜住，
+        // 绝不在钩子里阻塞
+        let Ok(active) = ACTIVE.try_lock() else {
+            return;
+        };
+        for (pid, token) in active.iter() {
+            // 顺序与 Session::shutdown 一致：先按 ppid 树收（逃逸进程这时还挂在 shell 下），
+            // 再端进程组，最后按标记补一遍
+            kill_descendants(*pid);
+            kill_group(*pid);
+            kill_escaped(token);
+        }
+    }
+
+    /// `atexit` 的入口：必须是 `extern "C"`，里面只做清理、不碰别的状态。
+    extern "C" fn cleanup() {
+        cleanup_now();
+    }
+}
+
 /// 与一次性 bash 一致：超长输出保留首尾。
 fn truncate(text: &str, max_chars: usize) -> String {
     let total = text.chars().count();
@@ -827,5 +907,33 @@ mod tests {
             script.contains("trap '__sb_kill_descendants; __sb_kill_escaped; kill 0; exit 0' EXIT"),
             "{script}"
         );
+    }
+
+    /// 父进程被硬杀时 Rust 端一行代码都跑不到：会话 shell 必须自己盯梢、自己端掉整组。
+    #[test]
+    fn warmup_has_orphan_watchdog() {
+        let script = ShellKind::Posix.warmup();
+        assert!(script.contains("__sb_parent=$PPID"), "{script}");
+        assert!(script.contains("kill -0 \"$$\""), "{script}");
+        assert!(script.contains("kill -0 \"$__sb_parent\""), "{script}");
+        assert!(script.contains("kill -KILL 0"), "{script}");
+    }
+
+    /// `std::process::exit()` 跳过 Drop，靠退出钩子收尾：登记过的会话要能被收掉，
+    /// 收掉之后要划出名单，且钩子在没有会话时执行也必须安全。
+    #[test]
+    fn exit_guard_tracks_live_sessions() {
+        exit_guard::cleanup_now(); // 名单为空时也要能安全执行
+        exit_guard::register(None, "guard-test");
+        assert!(exit_guard::is_tracked("guard-test"));
+        // 没有 pid、标记也扫不到任何进程：钩子跑一遍不应 panic、更不该误杀
+        exit_guard::cleanup_now();
+        exit_guard::unregister("guard-test");
+        assert!(!exit_guard::is_tracked("guard-test"));
+        // 重复登记同名会话（关了再开）不会在名单里留两行
+        exit_guard::register(None, "guard-test");
+        exit_guard::register(None, "guard-test");
+        exit_guard::unregister("guard-test");
+        assert!(!exit_guard::is_tracked("guard-test"));
     }
 }
