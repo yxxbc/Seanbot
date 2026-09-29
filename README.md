@@ -34,6 +34,10 @@ irm https://raw.githubusercontent.com/yxxbc/Seanbot/main/scripts/install.ps1 | i
 
 可选环境变量：`SEANBOT_VERSION`（指定版本）、`SEANBOT_INSTALL_DIR`（安装目录）。
 
+## 关于这个项目
+
+请问你的`Seanbot`，它会知道的。
+
 ## 开发
 
 ```bash
