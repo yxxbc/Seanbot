@@ -26,7 +26,7 @@ Cargo workspace with three crates and a strictly one-way dependency chain: `sean
 
 - **seanbot-provider** — vendor layer. `Provider` trait (`info`, `list_models`, `stream`) returning `StreamChunk`s. Vendors are data-driven `ProviderDescriptor`s (`builtin_providers()`, `create()`); a new OpenAI-compatible vendor is just a new descriptor, vendor differences go in `Quirks`. Streaming tool-call fragments are assembled inside the provider; the core only ever sees complete `ToolCall`s with raw-string JSON arguments. Retries (3×, exponential backoff, honor `Retry-After`) happen only before the first chunk arrives. Knows nothing about agents or tool execution.
 - **seanbot-core** — the agent loop, tool registry, the builtin tools (`bash`, `config`, `edit`, `kb_*`, `perceive`, `read`, `search`, `skill`, `web_*`), the knowledge base, project-instruction and skill discovery, bash denylist, config. Must never touch the terminal: its only UI surfaces are the `AgentEvent` stream (mpsc) and the `PermissionHandler` trait, so a future Tauri desktop app can reuse it. Entry point is `Agent::run_turn(input, events, cancel)`.
-- **seanbot-cli** — input (rustyline) and rendering (crossterm spinners, ✓/✗ tool lines, usage line) only.
+- **seanbot-cli** — the terminal side. `tui/` is the inline TUI (ratatui): terminal guard (raw mode / bracketed paste / mouse restore, with a panic hook), scrollback through `Terminal::insert_before`, Markdown rendering shared with `-p` (`markdown.rs`), the slash popup and pickers (`slash.rs`), the confirmation dialog plus `TuiPermission` (`permission.rs`), the Ctrl+O transcript (`transcript.rs`) and the mascot/welcome box (`mascot.rs`). `repl.rs` keeps the line-mode REPL (escape hatch: `SEANBOT_REPL=1`) and the `-p` path; `render.rs` renders `-p` output and carries the insta snapshots.
 
 Invariants that span multiple components:
 
@@ -46,7 +46,7 @@ Config and data live in `~/.seanbot/` (`config.toml` with mode `0600`, `history`
 
 - User-facing UI text is Chinese; tool names and commands stay English.
 - Library crates use `thiserror`; the CLI uses `anyhow`.
-- Out of scope for the MVP (don't build unless asked): TUI/desktop, personas, subagents, plugins, context compaction, Markdown rendering. Session persistence (`-c`/`-r`/`/resume`, `seanbot-core::session`) and the tool confirmation UI are already implemented.
+- Out of scope (don't build unless asked): desktop/Tauri app, personas, subagents, plugins, context compaction. Already implemented: session persistence (`-c`/`-r`/`/resume`, `seanbot-core::session`), the tool confirmation UI, and the inline TUI (including Markdown rendering, the Ctrl+O transcript and the mascot).
 
 ## Commit conventions (hard-enforced)
 
