@@ -7,6 +7,7 @@ mod render;
 mod repl;
 mod setup;
 mod skills;
+mod tui;
 mod update;
 
 use std::{
@@ -203,14 +204,23 @@ async fn converse(cli: Cli) -> anyhow::Result<ExitCode> {
                     }
                 });
             }
-            repl::run(
-                &mut agent,
-                &cfg,
-                &journal,
-                renderer.expect("交互模式一定有渲染器"),
-                hint_rx,
-            )
-            .await?;
+            // 迁移期逃生门：TUI 还没到功能对等，设 SEANBOT_REPL=1 回到逐行 REPL
+            if std::env::var_os("SEANBOT_REPL").is_some() {
+                repl::run(
+                    &mut agent,
+                    &cfg,
+                    &journal,
+                    renderer.expect("交互模式一定有渲染器"),
+                    hint_rx,
+                )
+                .await?;
+            } else if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                tui::run(&mut agent, &cfg, &journal, hint_rx).await?;
+            } else {
+                anyhow::bail!(
+                    "当前输出不是终端，无法启动交互界面；请用 `sean -p \"问题\"` 单轮提问"
+                );
+            }
             Ok(ExitCode::SUCCESS)
         }
     }

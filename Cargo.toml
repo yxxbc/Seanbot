@@ -14,7 +14,7 @@ async-trait = "0.1"
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 dirs = "6"
 ratatui = "0.29"
 theway-markdown = "0.1"

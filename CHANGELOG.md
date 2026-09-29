@@ -13,6 +13,9 @@ Seanbot 的所有重要变更都会记录在本文件中。
 
 ### 新增
 
+- **行内 TUI（阶段 2a 骨架）**：`sean` 默认进入 ratatui 行内界面——raw mode + bracketed paste + panic 兜底还原终端、行内 viewport、单行输入框（光标移动/删除、Ctrl+A/E/U/C）、状态栏（模型 · 目录 · 确认模式/YOLO）、活动区实时显示助手流式正文与工具行；Ctrl+D 或连按两次 Ctrl+C 退出，Esc / Ctrl+C 中断本轮
+- 交互模式的 Markdown 渲染：终端里走 theway-markdown 流式渲染（品牌配色：标题金、行内代码奶油、代码语言珊瑚），重定向到文件时仍是原始 Markdown
+- 迁移期逃生门：设 `SEANBOT_REPL=1` 回到逐行 REPL；`sean` 在 stdout 不是终端时报错并提示改用 `sean -p`
 - bash 常驻会话：`bash` 新增 `session` 参数，同一个会话里 `cd`、环境变量、函数都会保留，适合"先 cd 再跑一串命令"这类连续操作；不带 `session` 时仍是一次性进程，行为不变
 - Windows 上的常驻会话：有 Git Bash 时走同一套 POSIX 逻辑，否则用 PowerShell（`-Command -` 从 stdin 读命令、哨兵带回 `$LASTEXITCODE` 与 `Get-Location`）
 - 连"主动脱离进程组"的进程也收得掉（例如会话里 `setsid` 起的守护进程）：每个会话带唯一标记进环境，关闭时 Rust 端按标记扫一遍（Linux 读 `/proc/*/environ`，macOS 用 `ps eww`）发 SIGKILL；会话 shell 的 `EXIT` 陷阱里也扫一遍，所以父进程被 SIGKILL、Rust 端没机会执行时同样不留残渣

@@ -35,7 +35,10 @@ scan_marker() {
     || true
 }
 
-alive() { kill -0 "$1" 2>/dev/null; }
+alive() { # kill -0 对僵尸进程（已死、等回收）也返回成功，这里只看真正活着的
+  state="$(ps -o stat= -p "$1" 2>/dev/null | tr -d '[:space:]')"
+  [ -n "$state" ] && [ "${state#Z}" = "$state" ]
+}
 
 check_pids_gone() { # check_pids_gone <场景> <pid...>
   scenario=$1

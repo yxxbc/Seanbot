@@ -725,6 +725,7 @@ mod tests {
 
     /// 会话初始化脚本是拼进 Rust 字符串的 shell 片段：转义写错时这里先炸，
     /// 不用等会话行为测试（`scripts/tests/bash_session_test.sh`）里才发现。
+    #[cfg(unix)]
     #[test]
     fn warmup_script_is_valid_bash() {
         let has_bash = std::process::Command::new("bash")
@@ -732,14 +733,15 @@ mod tests {
             .output()
             .is_ok();
         if !has_bash {
-            return; // 没有 bash 的平台（例如 Windows 裸机）跳过
+            return; // 没有 bash 的平台跳过
         }
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("warmup.sh");
-        std::fs::write(&path, ShellKind::Posix.warmup()).unwrap();
+        std::fs::write(dir.path().join("warmup.sh"), ShellKind::Posix.warmup()).unwrap();
+        // 用相对路径 + current_dir：免得把 Windows 路径塞给 Git Bash
         let out = std::process::Command::new("bash")
             .arg("-n")
-            .arg(&path)
+            .arg("warmup.sh")
+            .current_dir(dir.path())
             .output()
             .unwrap();
         assert!(
