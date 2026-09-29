@@ -586,10 +586,10 @@ fn marked_processes(token: &str) -> Vec<u32> {
                 let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
                     continue;
                 };
-                if let Ok(bytes) = std::fs::read(entry.path().join("environ")) {
-                    if contains_env(&bytes, &needle) {
-                        found.push(pid);
-                    }
+                if let Ok(bytes) = std::fs::read(entry.path().join("environ"))
+                    && contains_env(&bytes, &needle)
+                {
+                    found.push(pid);
                 }
             }
         }

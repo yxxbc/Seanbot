@@ -24,13 +24,14 @@ fail=0
 note() { printf '%s\n' "$*"; }
 
 # 按标记扫描残留进程（ps 是否显示环境依赖平台，扫不到时还有 pid 核对）。
-# 注意要排除扫描自身：本脚本、以及它拉起的 ps / grep / awk 管道都带着同一个标记环境。
+# 扫描自身（本脚本与它拉起的 ps / grep / awk 管道）也带着标记环境，CI 上会被立刻看到，
+# 所以按「工具名 + 脚本路径 + 自身 pid」把它们排除掉。
 scan_marker() {
   ps eww -ax 2>/dev/null \
     | grep -F "$MARKER" \
-    | grep -v -e grep -e 'ps eww' \
-    | awk -v me="$$" '$1 != me' \
-    | grep -v -F "$0" \
+    | grep -vE '(^|[[:space:]])(ps|grep|awk)([[:space:]]|$)' \
+    | grep -vF "$0" \
+    | grep -vE "^[[:space:]]*$$[[:space:]]" \
     || true
 }
 
