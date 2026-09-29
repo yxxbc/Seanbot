@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project state
 
-Seanbot is a terminal AI agent (command name `sean`) written in Rust, talking to DeepSeek via an OpenAI-compatible API. The MVP described in `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md` is implemented as a three-crate workspace; the task-by-task plan is in `docs/superpowers/plans/2026-09-29-seanbot-mvp.md` (both are local-only: `docs/superpowers/` is git-ignored). Long-term concept notes (kernel, tools, knowledge base, subagents, plugins, process cleanup) are in `docs/Seanbot/`. All docs are written in Chinese.
+Seanbot is a terminal AI agent (command name `sean`) written in Rust, talking to DeepSeek via an OpenAI-compatible API. The MVP described in `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md` is implemented as a three-crate workspace; the task-by-task plan is in `docs/superpowers/plans/2026-09-29-seanbot-mvp.md` (both are local-only: `docs/superpowers/` is git-ignored). Design and implementation notes for what is already built are published in `docs/design/` (tracked, and linked from the built-in knowledge base by repo URL); concept notes for unbuilt features (subagents, plugins) stay in `docs/Seanbot/`, and the process docs (specs/plans/handoff) in `docs/superpowers/` — both git-ignored. The built-in `kb/` is user-facing usage knowledge and must only reference committed paths (a test enforces it). All docs are written in Chinese.
 
 ## Commands
 
