@@ -16,7 +16,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 dirs = "6"
-ratatui = "0.29"
+# scrolling-regions：行内视口的 insert_before 走"滚动区域"而不是清屏重绘
+ratatui = { version = "0.29", features = ["scrolling-regions"] }
 theway-markdown = "0.1"
 tui-textarea = "0.7"
 flate2 = "1"
