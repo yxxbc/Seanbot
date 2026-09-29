@@ -8,8 +8,9 @@ mod types;
 
 pub use descriptor::{
     DEEPSEEK, DEFAULT_CONTEXT_WINDOW, ProviderDescriptor, ProviderKind, Quirks, builtin_providers,
-    find_provider, model_info,
+    create, find_provider, model_info,
 };
 pub use error::ProviderError;
+pub use openai::OpenAiCompat;
 pub use provider::{ChunkStream, Provider};
 pub use types::*;

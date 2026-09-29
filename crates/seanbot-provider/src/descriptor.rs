@@ -101,3 +101,13 @@ mod tests {
         assert!(unknown.supports_tools);
     }
 }
+use std::sync::Arc;
+
+use crate::{Provider, openai::OpenAiCompat};
+
+/// 按厂商协议类型构造实现。
+pub fn create(desc: &ProviderDescriptor, api_key: impl Into<String>) -> Arc<dyn Provider> {
+    match desc.kind {
+        ProviderKind::OpenAiCompat => Arc::new(OpenAiCompat::new(desc, api_key)),
+    }
+}
