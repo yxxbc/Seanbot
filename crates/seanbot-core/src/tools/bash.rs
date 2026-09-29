@@ -70,12 +70,31 @@ impl Interpreter {
             }
             Self::PowerShell => {
                 let mut c = tokio::process::Command::new("powershell");
-                c.args(["-NoProfile", "-NonInteractive", "-Command"])
-                    .arg(format!("& {{ {script} }} 2>&1"));
+                // -EncodedCommand（UTF-16LE + base64）交付脚本：脚本里的引号、反斜杠、
+                // 结尾注释都不会被 PowerShell 的命令行解析破坏
+                c.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+                    .arg(encoded_command(&powershell_script(script)));
                 c
             }
         }
     }
+}
+
+/// PowerShell 包装脚本：脚本放进独立块（前后换行，避免结尾注释吞掉 `}`），合并 stderr，
+/// 并在末尾显式 `exit $LASTEXITCODE` —— PowerShell 5.1 的 -Command 只按成功与否给出 0/1，
+/// 甚至把写入 stderr 的成功命令报成失败，必须显式透传。
+fn powershell_script(script: &str) -> String {
+    format!("& {{\n{script}\n}} 2>&1; exit $LASTEXITCODE")
+}
+
+/// `-EncodedCommand` 要求脚本先编码为 UTF-16LE，再做 base64。
+fn encoded_command(script: &str) -> String {
+    use base64::Engine as _;
+    let mut bytes = Vec::with_capacity(script.len() * 2 + 8);
+    for unit in script.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 fn find_bash() -> Option<PathBuf> {
@@ -526,6 +545,58 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod powershell_wrapper {
+    use super::*;
+    use base64::Engine as _;
+
+    /// 解出 `-EncodedCommand` 里的包装脚本（不需要 Windows）。
+    fn decoded(script: &str) -> String {
+        let cmd = Interpreter::PowerShell.command(script);
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args.len(), 4, "{args:?}");
+        assert_eq!(args[0], "-NoProfile");
+        assert_eq!(args[1], "-NonInteractive");
+        assert_eq!(args[2], "-EncodedCommand");
+        let b64 = &args[3];
+        assert!(
+            b64.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+/=".contains(c)),
+            "base64 不含空格等需要转义的字符：{b64}"
+        );
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(b64)
+            .expect("包装脚本应是 base64");
+        let (units, rest) = bytes.as_chunks::<2>();
+        assert!(rest.is_empty(), "UTF-16LE 字节数应为偶数");
+        let units: Vec<u16> = units.iter().map(|c| u16::from_le_bytes(*c)).collect();
+        String::from_utf16(&units).expect("包装脚本应是合法 UTF-16")
+    }
+
+    #[test]
+    fn powershell_command_keeps_script_and_exit_code() {
+        let script = decoded("npm test");
+        assert!(script.contains("npm test"), "{script}");
+        assert!(script.contains("2>&1"), "{script}");
+        // PowerShell 5.1 的 -Command 不把失败状态带出来，必须显式 exit
+        assert!(
+            script.trim_end().ends_with("exit $LASTEXITCODE"),
+            "{script}"
+        );
+    }
+
+    #[test]
+    fn powershell_encoding_survives_quotes_and_backslash() {
+        // 引号与结尾反斜杠是 PowerShell 命令行解析的经典脆弱点：编码后逐字节保留
+        let raw = r#"Write-Output "c:\d\""#;
+        assert!(decoded(raw).contains(raw), "{raw}");
+    }
+}
+
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::*;
@@ -545,6 +616,51 @@ mod windows_tests {
             .unwrap();
         assert!(out.content.starts_with("hi"), "{}", out.content);
         assert!(!out.is_error);
+    }
+
+    #[tokio::test]
+    async fn powershell_reports_nonzero_exit_code() {
+        let (_d, ctx) = ctx();
+        let out = execute(&Interpreter::PowerShell, "cmd /c exit 3", 30, &ctx)
+            .await
+            .unwrap();
+        assert!(out.is_error, "{}", out.content);
+        assert!(out.content.contains("[退出码 3]"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn powershell_stderr_progress_is_not_a_failure() {
+        let (_d, ctx) = ctx();
+        // 写 stderr 但退出码为 0：PS 5.1 会包装成 NativeCommandError，不能误判为失败
+        let out = execute(
+            &Interpreter::PowerShell,
+            r#"cmd /c "echo progress 1>&2""#,
+            30,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("progress"), "{}", out.content);
+    }
+
+    #[tokio::test]
+    async fn powershell_handles_quotes_and_trailing_backslash() {
+        let (_d, ctx) = ctx();
+        let out = execute(&Interpreter::PowerShell, r#"Write-Output "a b""#, 30, &ctx)
+            .await
+            .unwrap();
+        assert!(out.content.starts_with("a b"), "{}", out.content);
+        let out = execute(
+            &Interpreter::PowerShell,
+            r#"Write-Output "c:\d\""#,
+            30,
+            &ctx,
+        )
+        .await
+        .unwrap();
+        assert!(out.content.contains("c:\\d\\"), "{}", out.content);
+        assert!(!out.is_error, "{}", out.content);
     }
 
     #[tokio::test]
