@@ -55,3 +55,6 @@ try {
 }
 if ($script:Failed -gt 0) { Write-Host "install_test.ps1：$($script:Failed) 项失败"; exit 1 }
 Write-Host 'install_test.ps1：全部通过'
+# 显式 exit 0：pwsh 会把最后一个原生命令的退出码当成进程退出码，
+# 而上面刻意跑的失败安装会留下 $LASTEXITCODE=1
+exit 0
