@@ -92,6 +92,41 @@ fn mask_key(key: &str) -> String {
 #[serde(default)]
 pub struct ToolsConfig {
     pub bash: BashConfig,
+    pub web: WebConfig,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// 联网服务，目前只支持 `anysearch`
+    pub provider: String,
+    /// 可选；环境变量 `ANYSEARCH_API_KEY` 优先；都为空时匿名访问
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
+    /// 可选；覆盖服务地址（测试或自建代理用），环境变量 `ANYSEARCH_API_BASE_URL` 优先
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            provider: "anysearch".into(),
+            api_key: None,
+            base_url: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for WebConfig {
+    /// 与 `ProviderConfig` 一致：`api_key` 打码。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &self.api_key.as_deref().map(mask_key))
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -294,5 +329,18 @@ mod tests {
         let rendered = format!("{cfg:?}");
         assert!(!rendered.contains("sk-a"), "{rendered}");
         assert!(rendered.contains("****"), "{rendered}");
+    }
+    #[test]
+    fn web_config_defaults_and_masking() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[tools.web]\napi_key = \"as_sk_secret123\"\n").unwrap();
+        let cfg = Config::load_from(&path).unwrap().unwrap();
+        assert_eq!(cfg.tools.web.provider, "anysearch");
+        assert_eq!(cfg.tools.web.api_key.as_deref(), Some("as_sk_secret123"));
+        let rendered = format!("{cfg:?}");
+        assert!(!rendered.contains("as_sk_secret123"), "{rendered}");
+        assert!(rendered.contains("as_s…"), "{rendered}");
+        assert_eq!(Config::default().tools.web.provider, "anysearch");
     }
 }

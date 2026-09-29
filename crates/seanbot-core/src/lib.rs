@@ -3,6 +3,7 @@
 pub mod config;
 pub mod session;
 pub mod tools;
+pub mod web;
 
 mod agent;
 mod denylist;

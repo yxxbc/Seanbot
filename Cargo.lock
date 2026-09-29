@@ -1488,6 +1488,7 @@ dependencies = [
  "ignore",
  "libc",
  "regex",
+ "reqwest",
  "seanbot-provider",
  "serde",
  "serde_json",
@@ -1498,6 +1499,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "wiremock",
 ]
 
 [[package]]
