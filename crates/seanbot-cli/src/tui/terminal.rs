@@ -153,11 +153,15 @@ pub fn restore_terminal() -> io::Result<()> {
 /// 还原序列的转义码部分（不含 raw mode，因为那是 termios 调用而不是写字节）。
 ///
 /// 抽成独立函数是为了能在没有 TTY 的环境里断言"到底写了哪些还原指令"。
+///
+/// **每一步都尽力而为**：某一步失败不能让后面的还原被跳过（否则退出后 bracketed paste
+/// 还开着）。Windows 上关鼠标捕获走 winapi、需要之前保存过控制台模式，进程没开过鼠标
+/// 捕获时会报 `Initial console modes not set`——这时剩下的两步照样要写完。
 fn restore_sequence(out: &mut impl Write) -> io::Result<()> {
-    execute!(out, DisableMouseCapture)?;
-    execute!(out, DisableBracketedPaste)?;
-    execute!(out, cursor::Show)?;
-    Ok(())
+    // `and` 会跑完三步再返回第一个错误（而不是短路），顺序也保持"先鼠标、再粘贴、后光标"
+    execute!(out, DisableMouseCapture)
+        .and(execute!(out, DisableBracketedPaste))
+        .and(execute!(out, cursor::Show))
 }
 
 /// 进入备用屏幕（仅在行内视口不可用时作为兜底路径使用）。
@@ -200,16 +204,63 @@ mod tests {
 
     #[test]
     fn restore_writes_every_needed_escape_sequence() {
-        // 终端还原的每一项都不能漏：漏掉任何一条都会留下"坏掉的终端"
+        // 终端还原的每一项都不能漏：漏掉任何一条都会留下"坏掉的终端"。
+        // 每一步都是尽力而为，所以这里不看返回值，只看到底写了哪些指令。
         let mut out: Vec<u8> = Vec::new();
-        restore_sequence(&mut out).unwrap();
+        let _ = restore_sequence(&mut out);
         let text = String::from_utf8(out).unwrap();
+        let mut expected = vec![
+            ("关闭 bracketed paste", "\u{1b}[?2004l"),
+            ("恢复光标显示", "\u{1b}[?25h"),
+        ];
+        // Windows 上关鼠标捕获走 winapi（要先保存过控制台模式），往内存里写不产生转义码：
+        // 这条序列只在非 Windows 上断言，Windows 的行为由下面那个"失败不跳过"的测试守
+        if !cfg!(windows) {
+            expected.push(("关闭鼠标捕获", "\u{1b}[?1000l"));
+        }
+        for (name, code) in expected {
+            assert!(text.contains(code), "还原序列缺少「{name}」：{text:?}");
+        }
+    }
+
+    /// 某一步写失败（Windows 上关鼠标捕获就会这样）不能让后面的还原被跳过。
+    struct FailsOnce {
+        bytes: Vec<u8>,
+        failed: bool,
+    }
+
+    impl Write for FailsOnce {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.failed {
+                self.bytes.extend_from_slice(buf);
+                return Ok(buf.len());
+            }
+            self.failed = true;
+            Err(io::Error::other("模拟第一步失败"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_failed_step_does_not_skip_the_rest_of_the_restore() {
+        let mut out = FailsOnce {
+            bytes: Vec::new(),
+            failed: false,
+        };
+        let result = restore_sequence(&mut out);
+        assert!(result.is_err(), "第一步确实失败了，错误要能被看到");
+        let text = String::from_utf8(out.bytes).unwrap();
         for (name, code) in [
-            ("关闭鼠标捕获", "\u{1b}[?1000l"),
             ("关闭 bracketed paste", "\u{1b}[?2004l"),
             ("恢复光标显示", "\u{1b}[?25h"),
         ] {
-            assert!(text.contains(code), "还原序列缺少「{name}」：{text:?}");
+            assert!(
+                text.contains(code),
+                "第一步失败后仍然要写「{name}」：{text:?}"
+            );
         }
     }
 
