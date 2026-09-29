@@ -146,13 +146,13 @@
     <div class="panel">
       <!-- 产品切换：CLI / TUI / App。状态文案与可用性在 assets/app.js 的 PRODUCTS 里 -->
       <div class="tabs" role="tablist" aria-label="选择产品形态">
-        <button class="tab is-active" role="tab" id="tab-cli" aria-selected="true" aria-controls="panel-download" data-product="cli">
+        <button class="tab" role="tab" id="tab-cli" aria-selected="false" aria-controls="panel-download" data-product="cli" tabindex="-1">
           <span class="tab__name">CLI</span>
-          <span class="tab__note">逐行对话</span>
+          <span class="tab__note">单轮 / 脚本</span>
         </button>
-        <button class="tab" role="tab" id="tab-tui" aria-selected="false" aria-controls="panel-download" data-product="tui" tabindex="-1">
+        <button class="tab is-active" role="tab" id="tab-tui" aria-selected="true" aria-controls="panel-download" data-product="tui">
           <span class="tab__name">TUI</span>
-          <span class="tab__note">全屏界面</span>
+          <span class="tab__note">默认界面</span>
         </button>
         <button class="tab" role="tab" id="tab-app" aria-selected="false" aria-controls="panel-download" data-product="app" tabindex="-1">
           <span class="tab__name">App</span>
@@ -160,7 +160,7 @@
         </button>
       </div>
 
-      <div class="panel__body" id="panel-download" role="tabpanel" aria-labelledby="tab-cli" tabindex="0">
+      <div class="panel__body" id="panel-download" role="tabpanel" aria-labelledby="tab-tui" tabindex="0">
         <div class="statusline">
           <span class="pill" id="status-pill">可用</span>
           <p class="statusline__text" id="status-text"></p>
@@ -240,6 +240,7 @@
     <!--
       素材接入说明（以后补图不用改 JS）：
       1) 把截图放进 site/previews/，文件名固定为 cli.png / tui.png / app.png
+         （tui.png 是默认展示的那张：TUI 已是默认产品形态）
          推荐 1600×1000 左右、PNG、单张 < 1 MiB（仓库 pre-commit 钩子会拦下超过 1 MiB 的文件）
       2) 刷新页面即可：这里会先尝试加载图片，加载失败才退回「正在补充」占位
       3) 想换文件名或格式：改 site/assets/app.js 里 PRODUCTS[...].preview
@@ -247,7 +248,7 @@
     <figure class="window">
       <div class="window__bar">
         <span class="window__dots"><i></i><i></i><i></i></span>
-        <span class="window__title" id="preview-title">sean — 终端</span>
+        <span class="window__title" id="preview-title">sean — TUI</span>
         <span class="pill" id="preview-pill">可用</span>
       </div>
       <div class="window__body">
@@ -263,7 +264,7 @@
       </div>
       <figcaption class="window__caption" id="preview-caption"></figcaption>
     </figure>
-    <noscript><p class="fineprint">未启用 JavaScript：上面固定显示 CLI 的预览占位，下载请手动选择系统。</p></noscript>
+    <noscript><p class="fineprint">未启用 JavaScript：上面固定显示 TUI 的预览占位，下载请手动选择系统。</p></noscript>
   </section>
 
   <!-- ============ 功能 ============ -->
@@ -332,11 +333,11 @@
     <div class="status-grid">
       <div class="status-card">
         <div class="status-card__top"><span class="pill">可用</span><span class="status-card__name">CLI</span></div>
-        <p>终端里的逐行对话：五个构建目标（macOS / Linux / Windows）的安装包都已就绪（预发布）。一行命令安装，<code>sean update</code> 一键升级。</p>
+        <p>单轮入口：<code>sean -p "问题"</code> 输出答案就退出，适合脚本与 CI；重定向到文件时输出原始 Markdown。五个构建目标（macOS / Linux / Windows）都能装，<code>sean update</code> 一键升级。</p>
       </div>
       <div class="status-card">
-        <div class="status-card__top"><span class="pill pill--wip">开发中</span><span class="status-card__name">TUI</span></div>
-        <p>ratatui 全屏界面还没落地。斜杠命令、工具确认与 Markdown 渲染现在已经在 CLI 里可用，等 TUI 出来再一起换。</p>
+        <div class="status-card__top"><span class="pill">可用</span><span class="status-card__name">TUI</span></div>
+        <p>默认界面：行内 TUI（ratatui）。助手回复流式 Markdown 写进终端滚动区，<code>/</code> 弹出命令浮窗，改动类工具有确认框，<code>Ctrl+O</code> 打开转录视图，还有吉祥物"环环"。与 CLI 同一个 <code>sean</code>，装完直接用。</p>
       </div>
       <div class="status-card">
         <div class="status-card__top"><span class="pill pill--wip">开发中</span><span class="status-card__name">App</span></div>

@@ -12,8 +12,9 @@
    2) 新增平台或架构：在 TARGETS 里加一项（target 必须是 CI 真实构建的三元组，
       见 .github/workflows/release.yml 的 matrix），页面会自动多出一个系统/架构按钮。
       归档扩展名在 TARGETS[x].archs[].ext 里写死，和 scripts/package.sh 保持一致。
-   3) TUI 正式发布后：把 PRODUCTS.tui.share 改成 true、pill 改成「可用」，
-      并把 statusText / caption 里的「还没落地」字样去掉即可，其余逻辑不用动。
+   3) 当前默认产品是 TUI（state.product = 'tui'，HTML 里 #tab-tui 默认 is-active）；
+      CLI 指的是单轮 sean -p。App 发布后照 TUI 的做法：把 PRODUCTS.app.share 改成 true、
+      pill 改成「可用」，并把 state.product 与 HTML 的 is-active 一起改过去。
    4) 版本徽章：site/assets/version.json 由 scripts/sync-site.sh 生成（版本取自 Cargo.toml、
       发布日期取自 CHANGELOG），发布与部署时各跑一次，不需要手改。
    ========================================================================== */
@@ -33,24 +34,21 @@
       name: 'CLI',
       pill: '可用',
       pillClass: '',
-      statusText: '逐行对话的终端版本，五个构建目标都已就绪（预发布）。',
+      statusText: '单轮提问与脚本友好：sean -p "问题" 输出答案就退出，重定向到文件时是原始 Markdown。',
       share: true,
       preview: 'previews/cli.png',
-      windowTitle: 'sean — 终端',
-      caption: 'CLI：输入问题直接开聊；/help 看命令，Ctrl+C 中断当前任务，sean update 升级。'
+      windowTitle: 'sean -p — 单轮',
+      caption: 'CLI：sean -p "问题" 跑一轮就退出，适合脚本与 CI；非交互模式下改动类工具默认被拒绝。'
     },
     tui: {
       name: 'TUI',
-      pill: '开发中',
-      pillClass: 'pill--wip',
-      statusText: '全屏 TUI 还没落地：斜杠命令、工具确认与 Markdown 渲染现在已在 CLI 里可用。',
-      share: false,
+      pill: '可用',
+      pillClass: '',
+      statusText: '默认界面：行内 TUI，与 CLI 是同一个 sean 可执行文件。',
+      share: true,
       preview: 'previews/tui.png',
       windowTitle: 'sean — TUI',
-      caption: 'TUI：与 CLI 共用一个 sean 可执行文件，发布后安装命令不变。',
-      wipTitle: '全屏 TUI 还在开发',
-      wipText: '斜杠命令、工具确认与 Markdown 渲染已经在 CLI 里可用；全屏界面发布后安装方式不变，sean update 就能升上去。',
-      wipLink: { text: '关注 Releases', href: REPO + '/releases' }
+      caption: 'TUI：流式 Markdown、/ 命令浮窗、改动前的确认框、Ctrl+O 转录视图，还有吉祥物环环。'
     },
     app: {
       name: 'App',
@@ -104,7 +102,7 @@
     }
   };
 
-  var state = { product: 'cli', os: 'macos', arch: 'arm64', detected: false, mobile: false };
+  var state = { product: 'tui', os: 'macos', arch: 'arm64', detected: false, mobile: false };
 
   var $ = function (id) { return document.getElementById(id); };
   var els = {};
