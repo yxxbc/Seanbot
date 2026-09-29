@@ -1,3 +1,4 @@
+mod confirm;
 mod format;
 mod journal;
 mod render;
@@ -8,16 +9,19 @@ use std::{
     path::{Path, PathBuf},
     process::ExitCode,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use seanbot_core::{
+    PermissionMode,
     config::Config,
     session::{self, LoadedSession, SessionError, SessionStore},
 };
 
 use journal::Journal;
+use render::{RenderStyle, Renderer};
 
 #[derive(Parser)]
 #[command(name = "sean", version, about = "Seanbot —— 终端里的 AI 助手")]
@@ -41,6 +45,10 @@ struct Cli {
     /// 把本次对话写入会话文件（`-p` 单次提问默认不写）
     #[arg(long = "session")]
     session: bool,
+
+    /// 跳过工具确认，直接执行（黑名单仍然生效）
+    #[arg(long = "yolo")]
+    yolo: bool,
 
     /// 临时覆盖本次使用的模型
     #[arg(long, global = true, value_name = "模型")]
@@ -99,7 +107,23 @@ async fn converse(cli: Cli) -> anyhow::Result<ExitCode> {
     let store = SessionStore::open_default()?;
     let target = resolve_target(&store, &cwd, &cli)?;
 
-    let mut agent = setup::build_agent(&cfg, cli.model.as_deref(), cli.trace.as_deref())?;
+    // 交互模式才做确认提示；`-p` 走非交互策略（只读放行，改动类需 --yolo）
+    let renderer = cli.prompt.is_none().then(|| {
+        render::shared(Renderer::new(
+            std::io::stdout(),
+            RenderStyle::detect(cfg.ui.show_reasoning),
+            Box::new(Instant::now),
+        ))
+    });
+    let mut agent = setup::build_agent(
+        &cfg,
+        cli.model.as_deref(),
+        cli.trace.as_deref(),
+        renderer.clone(),
+    )?;
+    if cli.yolo {
+        agent.runtime().write().unwrap().permission_mode = PermissionMode::Yolo;
+    }
     if let Some(path) = &cli.trace {
         eprintln!("模型 trace 已启用：{}", path.display());
     }
@@ -142,7 +166,13 @@ async fn converse(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.prompt {
         Some(prompt) => Ok(repl::run_once(&mut agent, &cfg, &journal, prompt).await),
         None => {
-            repl::run(&mut agent, &cfg, &journal).await?;
+            repl::run(
+                &mut agent,
+                &cfg,
+                &journal,
+                renderer.expect("交互模式一定有渲染器"),
+            )
+            .await?;
             Ok(ExitCode::SUCCESS)
         }
     }

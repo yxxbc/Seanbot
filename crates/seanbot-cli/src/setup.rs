@@ -8,15 +8,16 @@ use std::{
 
 use anyhow::{Context, anyhow};
 use seanbot_core::{
-    Agent, AllowAll, builtin_registry,
+    Agent, NonInteractive, PermissionHandler, RuntimeState, builtin_registry,
     config::{Config, config_path},
+    shared_runtime,
 };
 use seanbot_provider::{
     ModelInfo, Provider, ProviderDescriptor, builtin_providers, create, create_traced,
     find_provider,
 };
 
-use crate::format;
+use crate::{confirm::Confirm, format, render::SharedRenderer};
 
 pub fn load_config() -> anyhow::Result<Option<Config>> {
     let path = config_path()?;
@@ -52,21 +53,34 @@ pub fn provider_for(cfg: &Config, trace_path: Option<&Path>) -> anyhow::Result<A
     }
 }
 
+/// 构造 Agent。`renderer` 为 `Some` 时使用交互式确认（需要终端），否则使用非交互策略。
 pub fn build_agent(
     cfg: &Config,
     model_override: Option<&str>,
     trace_path: Option<&Path>,
+    renderer: Option<SharedRenderer<io::Stdout>>,
 ) -> anyhow::Result<Agent> {
     let provider = provider_for(cfg, trace_path)?;
     let model = model_override.unwrap_or(&cfg.model).to_string();
     let cwd = std::env::current_dir()?;
-    Ok(Agent::new(
+    let runtime = shared_runtime(RuntimeState {
+        provider: cfg.provider.clone(),
+        model: model.clone(),
+        ..RuntimeState::default()
+    });
+    // 权限处理器要读权限模式，必须与 Agent 共用同一份运行时状态
+    let permission: Arc<dyn PermissionHandler> = match renderer {
+        Some(renderer) => Arc::new(Confirm::new(runtime.clone(), renderer)),
+        None => Arc::new(NonInteractive::new(runtime.clone())),
+    };
+    Ok(Agent::with_runtime(
         provider,
         model,
         builtin_registry(cfg),
         Arc::new(cfg.clone()),
-        Arc::new(AllowAll),
+        permission,
         cwd,
+        runtime,
     ))
 }
 

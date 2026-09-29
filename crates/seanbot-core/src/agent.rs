@@ -73,14 +73,31 @@ impl Agent {
         permission: Arc<dyn PermissionHandler>,
         cwd: PathBuf,
     ) -> Self {
-        let system = prompt::system_prompt(&prompt::PromptEnv::detect(&cwd));
-        let denylist = Denylist::new(&config.tools.bash.deny);
         let model = model.into();
         let runtime = shared_runtime(RuntimeState {
             provider: provider.info().id.clone(),
             model: model.clone(),
             ..RuntimeState::default()
         });
+        Self::with_runtime(provider, model, tools, config, permission, cwd, runtime)
+    }
+
+    /// 用调用方提供的运行时状态构造。
+    ///
+    /// 权限处理器与 UI 要读权限模式、报告会话，就必须和 Agent 共用同一份状态，
+    /// 因此先在外部建好 `runtime` 再传进来。
+    pub fn with_runtime(
+        provider: Arc<dyn Provider>,
+        model: impl Into<String>,
+        tools: ToolRegistry,
+        config: Arc<Config>,
+        permission: Arc<dyn PermissionHandler>,
+        cwd: PathBuf,
+        runtime: SharedRuntime,
+    ) -> Self {
+        let system = prompt::system_prompt(&prompt::PromptEnv::detect(&cwd));
+        let denylist = Denylist::new(&config.tools.bash.deny);
+        let model = model.into();
         Self {
             provider,
             model,

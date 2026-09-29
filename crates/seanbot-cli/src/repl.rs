@@ -9,7 +9,7 @@ use std::{
 
 use rustyline::{DefaultEditor, error::ReadlineError};
 use seanbot_core::{
-    Agent, PromptEnv,
+    Agent, PermissionMode, PromptEnv,
     config::{Config, history_path},
     session, system_prompt,
 };
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     format,
     journal::{self, Journal},
-    render::{self, RenderStyle, Renderer},
+    render::{self, RenderStyle, Renderer, SharedRenderer},
     setup,
 };
 
@@ -28,6 +28,7 @@ const HELP: &str = "\
 /new     开始新会话（换一个会话文件）
 /resume  从列表中选择并恢复历史会话
 /model   切换模型
+/yolo    切换权限模式（确认模式 / YOLO）
 /help    显示帮助
 /exit    退出
 行末输入 \\ 可换行继续输入；执行中按 Ctrl+C 中断当前任务；Ctrl+D 退出";
@@ -38,6 +39,7 @@ enum Slash {
     New,
     Resume,
     Model,
+    Yolo,
     Help,
     Exit,
     Unknown(String),
@@ -49,6 +51,7 @@ fn parse_slash(input: &str) -> Slash {
         "/new" => Slash::New,
         "/resume" => Slash::Resume,
         "/model" => Slash::Model,
+        "/yolo" => Slash::Yolo,
         "/help" => Slash::Help,
         "/exit" | "/quit" => Slash::Exit,
         other => Slash::Unknown(other.to_string()),
@@ -63,20 +66,15 @@ fn continuation(line: &str) -> Option<&str> {
 /// 运行一轮：渲染事件、处理 Ctrl+C，并把事件录进会话文件。返回本轮是否成功。
 async fn run_turn(
     agent: &mut Agent,
-    cfg: &Config,
     journal: &Arc<Mutex<Journal>>,
+    renderer: &SharedRenderer<std::io::Stdout>,
     input: String,
 ) -> bool {
     let (tx, mut rx) = mpsc::channel(256);
     let (ui_tx, ui_rx) = mpsc::channel(256);
     // 先建好会话文件：本轮工具里调用 perceive 时就能看到会话 ID
     journal.lock().unwrap().ensure_open();
-    let renderer = Renderer::new(
-        std::io::stdout(),
-        RenderStyle::detect(cfg.ui.show_reasoning),
-        Box::new(Instant::now),
-    );
-    let render_task = tokio::spawn(render::drive(renderer, ui_rx));
+    let render_task = tokio::spawn(render::drive(renderer.clone(), ui_rx));
     // 落盘与渲染各消费一次：把内核事件复制一份转发给渲染器
     let tap_task = {
         let journal = journal.clone();
@@ -113,7 +111,12 @@ pub async fn run_once(
     journal: &Arc<Mutex<Journal>>,
     prompt: String,
 ) -> ExitCode {
-    if run_turn(agent, cfg, journal, prompt).await {
+    let renderer = render::shared(Renderer::new(
+        std::io::stdout(),
+        RenderStyle::detect(cfg.ui.show_reasoning),
+        Box::new(Instant::now),
+    ));
+    if run_turn(agent, journal, &renderer, prompt).await {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
@@ -124,14 +127,16 @@ pub async fn run(
     agent: &mut Agent,
     cfg: &Config,
     journal: &Arc<Mutex<Journal>>,
+    renderer: SharedRenderer<std::io::Stdout>,
 ) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     println!(
-        "Seanbot v{} · {}/{} · {}",
+        "Seanbot v{} · {}/{} · {} · {}",
         env!("CARGO_PKG_VERSION"),
         cfg.provider,
         agent.model(),
-        format::tilde_path(&cwd, dirs::home_dir().as_deref())
+        format::tilde_path(&cwd, dirs::home_dir().as_deref()),
+        agent.runtime().read().unwrap().permission_mode.label()
     );
     {
         let journal = journal.lock().unwrap();
@@ -191,16 +196,31 @@ pub async fn run(
                     }
                 }
                 Slash::Model => switch_model(agent, journal).await,
+                Slash::Yolo => toggle_permission_mode(agent),
                 Slash::Help => println!("{HELP}"),
                 Slash::Exit => break,
                 Slash::Unknown(cmd) => println!("未知命令：{cmd}（输入 /help 查看可用命令）"),
             }
             continue;
         }
-        run_turn(agent, cfg, journal, input).await;
+        run_turn(agent, journal, &renderer, input).await;
     }
     let _ = editor.save_history(&history);
     Ok(())
+}
+
+/// `/yolo`：切换权限模式。
+fn toggle_permission_mode(agent: &mut Agent) {
+    let mode = {
+        let runtime = agent.runtime();
+        let mut state = runtime.write().unwrap();
+        state.permission_mode = state.permission_mode.toggled();
+        state.permission_mode
+    };
+    match mode {
+        PermissionMode::Yolo => println!("权限模式：YOLO（工具直接执行，黑名单仍然生效）"),
+        PermissionMode::Confirm => println!("权限模式：确认模式（edit 与 bash 需要确认）"),
+    }
 }
 
 /// `/new`：换一段会话。系统提示词按当前环境重新生成，不沿用恢复来的旧提示词。
@@ -321,6 +341,7 @@ mod tests {
         assert_eq!(parse_slash("/new"), Slash::New);
         assert_eq!(parse_slash("/resume"), Slash::Resume);
         assert_eq!(parse_slash("/model  "), Slash::Model);
+        assert_eq!(parse_slash("/yolo"), Slash::Yolo);
         assert_eq!(parse_slash("/quit"), Slash::Exit);
         assert_eq!(parse_slash("/foo bar"), Slash::Unknown("/foo".into()));
     }

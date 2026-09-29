@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     io::{self, IsTerminal, Write},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -22,6 +23,13 @@ const PREVIEW_WIDTH: usize = 120;
 const TICK: Duration = Duration::from_millis(80);
 
 pub type Clock = Box<dyn Fn() -> Instant + Send>;
+
+/// 渲染器跨任务共享：渲染任务画动画，权限确认临时接管终端。
+pub type SharedRenderer<W> = Arc<Mutex<Renderer<W>>>;
+
+pub fn shared<W: Write + Send>(renderer: Renderer<W>) -> SharedRenderer<W> {
+    Arc::new(Mutex::new(renderer))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderStyle {
@@ -62,6 +70,8 @@ pub struct Renderer<W: Write> {
     reasoning_open: bool,
     at_line_start: bool,
     labels: HashMap<String, String>,
+    /// 终端被外部接管（如权限确认）时暂停动画
+    paused: bool,
 }
 
 impl<W: Write> Renderer<W> {
@@ -78,6 +88,7 @@ impl<W: Write> Renderer<W> {
             reasoning_open: false,
             at_line_start: true,
             labels: HashMap::new(),
+            paused: false,
         }
     }
 
@@ -87,7 +98,19 @@ impl<W: Write> Renderer<W> {
     }
 
     pub fn is_animating(&self) -> bool {
-        self.style.animate && self.spinner.is_some()
+        self.style.animate && self.spinner.is_some() && !self.paused
+    }
+
+    /// 交出终端：停掉动画并擦掉动画行，之后由调用方直接往 stdout 写。
+    pub fn suspend(&mut self) -> io::Result<()> {
+        self.paused = true;
+        self.stop_spinner()?;
+        self.out.flush()
+    }
+
+    /// 收回终端；动画会在下一次 tick 重画。
+    pub fn resume(&mut self) {
+        self.paused = false;
     }
 
     pub fn handle(&mut self, event: AgentEvent) -> io::Result<()> {
@@ -331,27 +354,27 @@ impl<W: Write> Renderer<W> {
     }
 }
 
-/// 在独立任务中消费事件并按 80ms 刷新动画；发送端关闭后返回渲染器。
+/// 在独立任务中消费事件并按 80ms 刷新动画；发送端关闭后返回。
 pub async fn drive<W: Write + Send>(
-    mut renderer: Renderer<W>,
+    renderer: SharedRenderer<W>,
     mut rx: mpsc::Receiver<AgentEvent>,
-) -> Renderer<W> {
+) {
     let mut ticker = tokio::time::interval(TICK);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
+        let animating = renderer.lock().unwrap().is_animating();
         tokio::select! {
             event = rx.recv() => match event {
                 Some(e) => {
-                    let _ = renderer.handle(e);
+                    let _ = renderer.lock().unwrap().handle(e);
                 }
                 None => break,
             },
-            _ = ticker.tick(), if renderer.is_animating() => {
-                let _ = renderer.tick();
+            _ = ticker.tick(), if animating => {
+                let _ = renderer.lock().unwrap().tick();
             }
         }
     }
-    renderer
 }
 
 #[cfg(test)]
