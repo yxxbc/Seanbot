@@ -2,6 +2,7 @@ mod confirm;
 mod format;
 mod journal;
 mod kb;
+mod markdown;
 mod render;
 mod repl;
 mod setup;
