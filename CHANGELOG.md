@@ -21,6 +21,11 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 品牌资源：`pics/Seanbot-icon.svg`、`pics/Seanbot-app-icon.svg`
 - 终端 agent `sean`：与 DeepSeek 多轮对话；`sean config` 配置向导、`sean models` 列出模型、`sean -p` 单次问答、`--model` 临时切换模型
 - 内置工具 `read`、`edit`、`bash`、`search`；工具执行时显示转圈、计时与折叠预览
+- 新工具 `perceive`：查看当前时间、模型、权限模式、会话、工作目录与 git 状态
+- 联网工具 `web_search` 与 `web_fetch`：默认接入 AnySearch（可用 `ANYSEARCH_API_KEY` 或 `~/.seanbot/config.toml` 的 `[tools.web]` 覆盖），网页内容按不可信数据标注
+- 系统提示词重写：身份、数据目录、可用命令与工具约定，模型能直接回答“会话存在哪 / 有哪些命令”这类问题
+- Windows 支持：`bash` 工具优先使用 Git Bash、缺失时回退 PowerShell，路径显示与命令黑名单同步兼容 Windows
+- 模型流增加 120 秒读超时，网络挂起时请求不再一直不返回
 - bash 命令黑名单，可在 `~/.seanbot/config.toml` 的 `[tools.bash] deny` 中调整
 - 每轮结束显示 token 用量与上下文缓存命中量；执行中按 Ctrl+C 可中断当前任务并继续对话
 - `--trace <文件>` 可选择记录模型实际请求体、响应、上下文长度分布、耗时与 token 用量的 JSONL 文件；文件权限为 `0600`
@@ -30,3 +35,5 @@ Seanbot 的所有重要变更都会记录在本文件中。
 ### 修复
 
 - `Config` / `ProviderConfig` 的 `Debug` 输出对 `api_key` 打码，避免调试与日志中泄露明文密钥
+- 联网搜索与读取网页时按 Ctrl+C 立即中断（此前最长要等 30 秒）
+- Windows PowerShell：命令失败不再被误报为成功（显式透传退出码），脚本含引号或结尾反斜杠不再解析出错，stderr 输出不再丢失、CLIXML 进度噪声不再混入结果
