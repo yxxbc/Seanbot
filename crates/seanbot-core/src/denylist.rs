@@ -169,7 +169,10 @@ fn skip_wrapper_options(wrapper: &str, tokens: &[String], mut i: usize) -> usize
     i
 }
 
-fn push_segment(segments: &mut Vec<(Sep, String)>, cur: &mut String, sep: Sep) {
+/// 拆出的命令段，每段带其前置分隔符。
+type Segments = Vec<(Sep, String)>;
+
+fn push_segment(segments: &mut Segments, cur: &mut String, sep: Sep) {
     let s = cur.trim();
     if !s.is_empty() {
         segments.push((sep, s.to_string()));
@@ -178,7 +181,7 @@ fn push_segment(segments: &mut Vec<(Sep, String)>, cur: &mut String, sep: Sep) {
 }
 
 /// 引号感知地拆段；返回（带前置分隔符的段，命令替换内容）。
-fn split_command(cmd: &str) -> Result<(Vec<(Sep, String)>, Vec<String>), String> {
+fn split_command(cmd: &str) -> Result<(Segments, Vec<String>), String> {
     let chars: Vec<char> = cmd.chars().collect();
     let mut segments = Vec::new();
     let mut subs = Vec::new();

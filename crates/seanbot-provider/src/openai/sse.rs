@@ -72,24 +72,24 @@ impl Assembler {
             return Ok(out);
         };
         let delta = &choice["delta"];
-        if let Some(r) = delta.get(self.reasoning_field).and_then(Value::as_str) {
-            if !r.is_empty() {
-                out.push(StreamChunk::ReasoningDelta(r.to_string()));
-            }
+        if let Some(r) = delta.get(self.reasoning_field).and_then(Value::as_str)
+            && !r.is_empty()
+        {
+            out.push(StreamChunk::ReasoningDelta(r.to_string()));
         }
-        if let Some(t) = delta.get("content").and_then(Value::as_str) {
-            if !t.is_empty() {
-                out.push(StreamChunk::TextDelta(t.to_string()));
-            }
+        if let Some(t) = delta.get("content").and_then(Value::as_str)
+            && !t.is_empty()
+        {
+            out.push(StreamChunk::TextDelta(t.to_string()));
         }
         if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
             for c in calls {
                 let index = c.get("index").and_then(Value::as_u64).unwrap_or(0);
                 let entry = self.calls.entry(index).or_default();
-                if let Some(id) = c.get("id").and_then(Value::as_str) {
-                    if !id.is_empty() {
-                        entry.id = id.to_string();
-                    }
+                if let Some(id) = c.get("id").and_then(Value::as_str)
+                    && !id.is_empty()
+                {
+                    entry.id = id.to_string();
                 }
                 if let Some(name) = c["function"].get("name").and_then(Value::as_str) {
                     entry.name.push_str(name);

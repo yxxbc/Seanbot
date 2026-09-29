@@ -317,10 +317,10 @@ impl Agent {
             )
         })?;
         let args = parsed.map_err(|e| format!("参数不是合法 JSON：{e}。请修正参数后重试"))?;
-        if call.name == "bash" {
-            if let Some(command) = args.get("command").and_then(Value::as_str) {
-                self.denylist.check(command)?;
-            }
+        if call.name == "bash"
+            && let Some(command) = args.get("command").and_then(Value::as_str)
+        {
+            self.denylist.check(command)?;
         }
         let request = PermissionRequest {
             tool: call.name.clone(),

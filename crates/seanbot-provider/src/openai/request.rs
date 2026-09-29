@@ -25,10 +25,10 @@ pub(crate) fn build_body(req: &ChatRequest, quirks: &Quirks) -> Value {
                     json!(m.content)
                 };
                 obj.insert("content".into(), content);
-                if quirks.echo_reasoning {
-                    if let Some(r) = &m.reasoning {
-                        obj.insert(quirks.reasoning_field.into(), json!(r));
-                    }
+                if quirks.echo_reasoning
+                    && let Some(r) = &m.reasoning
+                {
+                    obj.insert(quirks.reasoning_field.into(), json!(r));
                 }
                 if !m.tool_calls.is_empty() {
                     let calls: Vec<Value> = m
