@@ -28,6 +28,8 @@ Windows（PowerShell）：
 irm https://raw.githubusercontent.com/yxxbc/Seanbot/main/scripts/install.ps1 | iex
 ```
 
+装好之后，升级用 `sean update`（macOS / Linux）。
+
 可选环境变量：`SEANBOT_VERSION`（指定版本）、`SEANBOT_INSTALL_DIR`（安装目录）。
 
 ## 开发

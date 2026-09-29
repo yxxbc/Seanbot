@@ -4,6 +4,7 @@ mod journal;
 mod render;
 mod repl;
 mod setup;
+mod update;
 
 use std::{
     path::{Path, PathBuf},
@@ -68,6 +69,15 @@ enum Command {
     Config,
     /// 列出当前厂商的模型
     Models,
+    /// 检查并更新到最新版本
+    Update {
+        /// 只检查是否有新版本，不下载
+        #[arg(long)]
+        check: bool,
+        /// 更新到指定版本（默认最新）
+        #[arg(long, value_name = "版本")]
+        version: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -92,6 +102,7 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
             setup::print_models(&cfg).await?;
             Ok(ExitCode::SUCCESS)
         }
+        Some(Command::Update { check, version }) => update::run(check, version).await,
         None => converse(cli).await,
     }
 }
