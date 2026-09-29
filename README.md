@@ -6,7 +6,7 @@
 
 **你的全能代理。** 说清楚你要什么，剩下的交给它。
 
-![Version](https://img.shields.io/badge/version-0.2.0-blue)
+![Version](https://img.shields.io/badge/version-0.3.0-blue)
 ![Rust](https://img.shields.io/badge/Rust-1.85%2B-000000?logo=rust&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Provider](https://img.shields.io/badge/%E5%86%85%E7%BD%AE-DeepSeek-4D6BFE)
