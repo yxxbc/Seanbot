@@ -131,6 +131,7 @@ pub async fn run(
     cfg: &Config,
     journal: &Arc<Mutex<Journal>>,
     renderer: SharedRenderer<std::io::Stdout>,
+    mut update_hints: mpsc::UnboundedReceiver<String>,
 ) -> anyhow::Result<()> {
     let cwd = std::env::current_dir()?;
     println!(
@@ -161,6 +162,10 @@ pub async fn run(
 
     let mut interrupted = false;
     loop {
+        // 后台更新检查的结果在这里落地：只在提示符之间打印，不会打断正在输入的行
+        while let Ok(hint) = update_hints.try_recv() {
+            eprintln!("{hint}");
+        }
         let input = match read_input(&mut editor) {
             Ok(Some(line)) => {
                 interrupted = false;

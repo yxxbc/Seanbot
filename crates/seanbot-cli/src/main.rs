@@ -192,11 +192,22 @@ async fn converse(cli: Cli) -> anyhow::Result<ExitCode> {
     match cli.prompt {
         Some(prompt) => Ok(repl::run_once(&mut agent, &cfg, &journal, prompt).await),
         None => {
+            // 启动时顺带查一次新版本：后台跑、失败静默，结果在下一个提示符前打印
+            let (hint_tx, hint_rx) = tokio::sync::mpsc::unbounded_channel();
+            if update::check_enabled(&cfg) {
+                tokio::spawn(async move {
+                    update::refresh_cache().await;
+                    if let Some(hint) = update::cached_hint() {
+                        let _ = hint_tx.send(hint);
+                    }
+                });
+            }
             repl::run(
                 &mut agent,
                 &cfg,
                 &journal,
                 renderer.expect("交互模式一定有渲染器"),
+                hint_rx,
             )
             .await?;
             Ok(ExitCode::SUCCESS)

@@ -29,4 +29,4 @@ tmp="site/assets/version.json.tmp"
 printf '{\n  "version": "%s",\n  "tag": "%s",\n  "released": "%s"\n}\n' \
   "$version" "$tag" "$released" >"$tmp"
 mv "$tmp" site/assets/version.json
-echo "站点版本已同步：$tag（$released）"
+echo "站点版本已同步：${tag}（${released}）"

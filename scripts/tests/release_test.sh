@@ -42,6 +42,7 @@ echo "release.sh"
 R="$TMP/r1"; new_repo "$R"
 out="$(release "$R" 0.2.0 --dry-run --skip-tests)"; st=$?
 assert_status "dry-run 成功" 0 "$st"
+[ "$st" = 0 ] || printf '    dry-run 输出：%s\n' "$out"
 assert_contains "dry-run 说明将要做的事" "$out" "v0.2.0"
 assert_eq "dry-run 不改工作区" "" "$(cd "$R" && git status --porcelain)"
 assert_eq "dry-run 不打标签" "" "$(cd "$R" && git tag)"

@@ -16,6 +16,7 @@ use std::{
 };
 
 use anyhow::{Context, bail};
+use seanbot_core::config::{self, Config};
 use sha2::{Digest, Sha256};
 
 const REPO: &str = "yxxbc/Seanbot";
@@ -348,6 +349,111 @@ fn replace(exe: &Path, _new: &Path) -> anyhow::Result<()> {
     )
 }
 
+// ------------------------------------------------------------ 启动时的更新检查
+
+/// 更新检查的缓存文件（放在数据目录里）。
+const CHECK_FILE: &str = "update-check.json";
+/// 缓存有效期：24 小时内不再联网查询。
+const CHECK_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// 后台检查的网络超时：启动流程不该等它。
+const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// 设了这个环境变量就完全跳过启动检查。
+const NO_CHECK_ENV: &str = "SEANBOT_NO_UPDATE_CHECK";
+
+/// 检查是否开启：配置项与环境变量都允许关闭。
+pub fn check_enabled(cfg: &Config) -> bool {
+    cfg.ui.check_updates && std::env::var_os(NO_CHECK_ENV).is_none()
+}
+
+/// 启动路径用：只读缓存、不发网络请求；有新版本才返回提示。
+pub fn cached_hint() -> Option<String> {
+    let path = cache_path()?;
+    let (_, latest) = read_cache_at(&path)?;
+    hint_for(&latest)
+}
+
+/// 后台刷新缓存：24 小时内的缓存直接跳过；网络失败静默放弃（不影响任何功能）。
+pub async fn refresh_cache() {
+    let now = unix_now();
+    if let Some(path) = cache_path()
+        && let Some((checked_at, _)) = read_cache_at(&path)
+        && cache_is_fresh(checked_at, now)
+    {
+        return;
+    }
+    let Ok(latest) = fetch_latest_quick().await else {
+        return;
+    };
+    if let Some(path) = cache_path() {
+        write_cache_at(&path, &latest, now);
+    }
+}
+
+fn cache_is_fresh(checked_at: u64, now: u64) -> bool {
+    now.saturating_sub(checked_at) < CHECK_TTL.as_secs()
+}
+
+fn cache_path() -> Option<PathBuf> {
+    config::data_dir().ok().map(|dir| dir.join(CHECK_FILE))
+}
+
+fn read_cache_at(path: &Path) -> Option<(u64, String)> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Some((
+        value.get("checked_at")?.as_u64()?,
+        value.get("latest")?.as_str()?.to_string(),
+    ))
+}
+
+fn write_cache_at(path: &Path, latest: &str, checked_at: u64) {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let body = serde_json::json!({ "checked_at": checked_at, "latest": latest });
+    let _ = fs::write(path, body.to_string());
+}
+
+/// 后台检查只走 HTTP（短超时），不走 `gh`：启动路径要快，失败也不打扰用户。
+async fn fetch_latest_quick() -> anyhow::Result<String> {
+    let response = reqwest::Client::builder()
+        .user_agent(concat!("seanbot/", env!("CARGO_PKG_VERSION")))
+        .timeout(CHECK_TIMEOUT)
+        .build()
+        .context("构建 HTTP 客户端失败")?
+        .get(API_LATEST)
+        .send()
+        .await
+        .context("查询最新版本失败")?;
+    if !response.status().is_success() {
+        bail!("查询最新版本失败：HTTP {}", response.status());
+    }
+    let body: serde_json::Value = response.json().await.context("解析版本信息失败")?;
+    let tag = body
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("版本信息里没有 tag_name"))?;
+    Ok(normalize_version(tag))
+}
+
+/// 有新版本时的提示文案；已是最新（或版本号为空）返回 `None`。
+fn hint_for(latest: &str) -> Option<String> {
+    let current = env!("CARGO_PKG_VERSION");
+    if latest.trim().is_empty() || !is_newer(latest, current) {
+        return None;
+    }
+    Some(format!(
+        "提示：发现新版本 v{latest}（当前 v{current}），运行 `sean update` 升级"
+    ))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,5 +506,42 @@ BBBB2222 *sean-x86_64-unknown-linux-gnu.tar.gz
             Ok(target) => assert!(target.contains('-'), "{target}"),
             Err(e) => assert!(e.to_string().contains("暂不支持")),
         }
+    }
+
+    #[test]
+    fn hint_only_for_newer_versions() {
+        assert!(hint_for("").is_none(), "查不到版本时不该提示");
+        assert!(
+            hint_for(env!("CARGO_PKG_VERSION")).is_none(),
+            "同版本不该提示"
+        );
+        assert!(hint_for("0.0.1").is_none(), "更老的版本不该提示");
+        let hint = hint_for("99.0.0").expect("更高的版本要提示");
+        assert!(hint.contains("99.0.0"), "{hint}");
+        assert!(hint.contains("sean update"), "{hint}");
+    }
+
+    #[test]
+    fn cache_write_and_read_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+
+        assert!(read_cache_at(&path).is_none(), "没有缓存文件时读不到");
+        write_cache_at(&path, "9.9.9", 1_700_000_000);
+        assert_eq!(read_cache_at(&path), Some((1_700_000_000, "9.9.9".into())));
+
+        // 缓存坏了也不影响任何功能：当作没查过
+        fs::write(&path, "not json").unwrap();
+        assert!(read_cache_at(&path).is_none());
+    }
+
+    #[test]
+    fn cache_is_fresh_for_24_hours() {
+        let now = 1_700_000_000u64;
+        assert!(cache_is_fresh(now, now));
+        assert!(cache_is_fresh(now - 23 * 3600, now));
+        assert!(!cache_is_fresh(now - 25 * 3600, now));
+        // 时钟回拨（缓存时间在未来）按刚查过处理，不反复联网
+        assert!(cache_is_fresh(now + 3600, now));
     }
 }

@@ -37,7 +37,7 @@ check_pids_gone() { # check_pids_gone <场景> <pid...>
   for pid in "$@"; do
     [ "$pid" = "?" ] && continue
     if alive "$pid"; then
-      note "✗ $scenario：进程 $pid 仍然活着"
+      note "✗ ${scenario}：进程 $pid 仍然活着"
       ps -o pid,ppid,stat,command -p "$pid" 2>/dev/null || true
       fail=1
     fi
@@ -63,7 +63,7 @@ cargo build -q -p seanbot-core --example bash_session_probe || exit 1
 
 for mode in drop exit closeall; do
   note ""
-  note "== 场景 $mode：开 2 个会话（各带 sleep 300 后台任务）后以该方式退出 =="
+  note "== 场景 ${mode}：开 2 个会话（各带 sleep 300 后台任务）后以该方式退出 =="
   out=$(cargo run -q -p seanbot-core --example bash_session_probe -- "$mode" 2 2>/dev/null)
   printf '%s\n' "$out"
   pids=$(printf '%s\n' "$out" | pids_of | tr '\n' ' ')

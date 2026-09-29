@@ -25,7 +25,7 @@ chmod +x "$hooks_dir"/*
 
 git config core.hooksPath "$hooks_dir"
 
-echo "✓ git hooks 已安装（core.hooksPath = $hooks_dir）"
+echo "✓ git hooks 已安装（core.hooksPath = ${hooks_dir}）"
 echo "  已启用："
 for hook in "$hooks_dir"/*; do
   echo "    - $(basename "$hook")"

@@ -239,10 +239,21 @@ impl Default for SearchConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UiConfig {
     pub show_reasoning: bool,
+    /// 启动时后台检查新版本：有新版本就打印一行提示（`SEANBOT_NO_UPDATE_CHECK=1` 可临时关闭）
+    pub check_updates: bool,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            show_reasoning: false,
+            check_updates: true,
+        }
+    }
 }
 
 /// 数据目录：`SEANBOT_HOME` 优先，否则 `~/.seanbot`。
@@ -459,6 +470,8 @@ mod tests {
         assert_eq!(cfg.tools.search.default_results, 200);
         assert_eq!(cfg.tools.web.max_results, 10);
         assert_eq!(cfg.tools.web.page_chars, 30_000);
+        // 启动时的更新检查默认开启（可用配置或环境变量关闭）
+        assert!(cfg.ui.check_updates);
     }
 
     #[test]

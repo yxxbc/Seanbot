@@ -58,7 +58,7 @@ if [ "$dry" = 1 ]; then
   info "将发布 ${tag}（当前 ${current}）"
   echo "  1. 运行 scripts/test.sh$([ "$tests" = 0 ] && echo "（已跳过）")"
   echo "  2. 更新 Cargo.toml / Cargo.lock 版本号为 $version"
-  echo "  3. CHANGELOG「未发布」→「[$version] - $(date +%Y-%m-%d)」，README 徽章 → $version，site/assets/version.json 同步"
+  echo "  3. CHANGELOG「未发布」→「[$version] - $(date +%Y-%m-%d)」，README 徽章 → ${version}，site/assets/version.json 同步"
   echo "  4. 提交 chore(release): 发布 $tag 并打标签 $tag"
   echo "  5. $([ "$push" = 1 ] && echo "推送 main 与 $tag 到 origin" || echo "不推送")"
   exit 0
