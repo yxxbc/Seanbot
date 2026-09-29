@@ -10,6 +10,7 @@
 //! 伪终端在当前开发沙箱里不可用（openpty 被拒），所以界面靠 ratatui TestBackend 断言
 //! （活动区/输入行/状态栏/光标），入口与按键逻辑用单元测试覆盖。
 
+mod mascot;
 mod permission;
 mod slash;
 mod transcript;
@@ -287,6 +288,10 @@ pub struct App {
     tool_meta: HashMap<String, ToolMeta>,
     /// 转录视图的选择/展开状态
     transcript_view: transcript::View,
+    /// 欢迎框里的环环
+    mascot: mascot::Mascot,
+    /// 还没发过消息（欢迎框还留在活动区）
+    welcome: bool,
     /// 当前工作目录（状态栏显示用）
     cwd: String,
     /// 待写进终端滚动区的行（写出去就从内存里丢掉）
@@ -320,6 +325,8 @@ impl App {
             transcript: Vec::new(),
             tool_meta: HashMap::new(),
             transcript_view: transcript::View::default(),
+            mascot: mascot::Mascot::default(),
+            welcome: true,
             cwd: cwd.to_string(),
             pending: Vec::new(),
             markdown: None,
@@ -566,14 +573,17 @@ impl App {
                 }
             }
             AgentEvent::TurnFinished { usage, steps } => {
+                self.mascot.mood = mascot::Mood::Happy;
                 self.flush_markdown();
                 self.push_line(format::usage_line(usage.as_ref(), steps));
             }
             AgentEvent::Cancelled => {
+                self.mascot.mood = mascot::Mood::Error;
                 self.flush_markdown();
                 self.push_line("⎿ 已中断".to_string());
             }
             AgentEvent::Error(msg) => {
+                self.mascot.mood = mascot::Mood::Error;
                 self.flush_markdown();
                 self.push_line(format!("✗ 错误：{msg}"));
             }
@@ -586,6 +596,13 @@ impl App {
         self.flush_markdown();
         self.push_line(format!("› {prompt}"));
         self.transcript.push(Entry::User(prompt.to_string()));
+        // 第一条消息发出：欢迎框以当前帧写进滚动区并定格
+        if self.welcome {
+            self.welcome = false;
+            let banner = self.banner();
+            self.pending.extend(banner);
+        }
+        self.mascot.mood = mascot::Mood::Thinking;
         self.running = true;
     }
 
@@ -622,7 +639,8 @@ impl App {
 
     /// 活动区高度：流式尾部 + 输入行 + 状态栏，不超过终端高度一半。
     pub fn desired_height(&self, term_height: u16) -> u16 {
-        let body = (self.tail.len() as u16).max(3);
+        let welcome = if self.welcome { 8 } else { 0 };
+        let body = (self.tail.len() as u16).max(3).max(welcome);
         // 浮窗也要占地方，不然会把它挤掉
         let popup = self
             .popup
@@ -643,12 +661,38 @@ impl App {
 
     pub fn tick(&mut self) {
         self.frame = self.frame.wrapping_add(1);
+        self.mascot.tick();
     }
 
     /// 活动区内容：还没冻结的流式尾部（只保留最后几行）。
     fn activity_lines(&self, height: usize) -> Vec<Line<'static>> {
-        let skip = self.tail.len().saturating_sub(height);
-        self.tail.iter().skip(skip).cloned().collect()
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        if self.welcome {
+            lines.extend(self.banner());
+        }
+        lines.extend(self.tail.iter().cloned());
+        let skip = lines.len().saturating_sub(height);
+        lines.into_iter().skip(skip).collect()
+    }
+
+    /// 欢迎框（沿用当前帧，冻结进滚动区时也是这一帧）。
+    fn banner(&self) -> Vec<Line<'static>> {
+        mascot::welcome_lines(
+            &self.mascot,
+            env!("CARGO_PKG_VERSION"),
+            &self.model_name(),
+            &self.mode,
+            &shorten_home(&self.cwd),
+        )
+    }
+
+    /// 状态栏左侧里显示的模型名（从 `模型 · 目录` 里取回模型部分）。
+    fn model_name(&self) -> String {
+        self.left
+            .split(" · ")
+            .next()
+            .unwrap_or_default()
+            .to_string()
     }
 
     /// 转录内容（Ctrl+O 视图用）。
@@ -925,14 +969,14 @@ impl App {
     }
 
     fn status_line(&self) -> Line<'static> {
-        let spinner = ["◜", "◝", "◞", "◟"][(self.frame / 2) % 4];
         let left = if self.running {
-            format!("{spinner} 思考中… ")
+            " 思考中… ".to_string()
         } else {
             String::new()
         };
         let hint = self.hint.clone().unwrap_or_default();
         Line::from(vec![
+            self.mascot.mini(),
             Span::styled(left, Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C))),
             Span::raw(format!("{} · {hint}", self.left)),
             Span::raw("  "),
@@ -1633,6 +1677,67 @@ mod tests {
     }
 
     #[test]
+    fn welcome_box_shows_first_then_freezes_into_the_scrollback() {
+        let mut app = new_app();
+        // 还没发消息：活动区显示欢迎框
+        let lines = app.activity_lines(12);
+        let text: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+        let joined = text.join("\n");
+        assert!(joined.contains("Seanbot v"), "欢迎框应当显示：{joined}");
+        assert!(joined.contains("deepseek-flash"), "{joined}");
+        assert!(app.take_pending().is_empty(), "还没发消息时不该有滚动内容");
+
+        // 发出第一条消息：欢迎框定格进滚动区，活动区不再显示它
+        app.turn_started("你好");
+        let frozen: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        let frozen_text = frozen.join("\n");
+        assert!(
+            frozen_text.contains("Seanbot v"),
+            "欢迎框应当写进滚动区：{frozen_text}"
+        );
+        assert!(frozen_text.contains("› 你好"), "{frozen_text}");
+        let after: Vec<String> = app
+            .activity_lines(12)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert!(
+            !after.join("\n").contains("Seanbot v"),
+            "发出消息后活动区不该再显示欢迎框：{after:?}"
+        );
+    }
+
+    #[test]
+    fn mascot_mood_follows_the_turn() {
+        let mut app = new_app();
+        assert_eq!(app.mascot.mood, mascot::Mood::Idle, "刚进来是待机");
+        app.turn_started("你好");
+        assert_eq!(
+            app.mascot.mood,
+            mascot::Mood::Thinking,
+            "发消息时进入思考态"
+        );
+        app.on_agent_event(AgentEvent::TurnFinished {
+            usage: None,
+            steps: 1,
+        });
+        assert_eq!(app.mascot.mood, mascot::Mood::Happy);
+        app.turn_started("再来");
+        app.on_agent_event(AgentEvent::Cancelled);
+        assert_eq!(app.mascot.mood, mascot::Mood::Error);
+        app.on_agent_event(AgentEvent::Error("崩了".into()));
+        assert_eq!(app.mascot.mood, mascot::Mood::Error);
+    }
+
+    #[test]
+    fn welcome_box_occupies_the_activity_area_height() {
+        let mut app = new_app();
+        assert_eq!(app.desired_height(40), 10, "欢迎框 8 行 + 输入行 + 状态栏");
+        app.turn_started("你好");
+        assert_eq!(app.desired_height(40), 5, "发消息后回到最小高度");
+    }
+
+    #[test]
     fn ctrl_o_opens_the_transcript_view() {
         let mut app = new_app();
         assert_eq!(app.on_key(ctrl('o')), Action::OpenTranscript);
@@ -1906,10 +2011,12 @@ mod tests {
     #[test]
     fn desired_height_follows_the_tail_and_the_terminal() {
         let mut app = new_app();
+        assert_eq!(app.desired_height(40), 10, "欢迎框 8 行 + 输入行 + 状态栏");
+        app.turn_started("你好");
         assert_eq!(
             app.desired_height(40),
             5,
-            "空尾部：3 行正文 + 输入行 + 状态栏"
+            "发完消息：3 行正文 + 输入行 + 状态栏"
         );
         assert_eq!(app.desired_height(8), 4, "小终端下不超过一半高度");
         app.on_agent_event(AgentEvent::TextDelta(
