@@ -23,9 +23,15 @@ cd "$ROOT" || exit 1
 fail=0
 note() { printf '%s\n' "$*"; }
 
-# 按标记扫描残留进程（ps 是否显示环境依赖平台，扫不到时还有 pid 核对）
+# 按标记扫描残留进程（ps 是否显示环境依赖平台，扫不到时还有 pid 核对）。
+# 注意要排除扫描自身：本脚本、以及它拉起的 ps / grep / awk 管道都带着同一个标记环境。
 scan_marker() {
-  ps eww -ax 2>/dev/null | grep -F "$MARKER" | grep -v grep || true
+  ps eww -ax 2>/dev/null \
+    | grep -F "$MARKER" \
+    | grep -v -e grep -e 'ps eww' \
+    | awk -v me="$$" '$1 != me' \
+    | grep -v -F "$0" \
+    || true
 }
 
 alive() { kill -0 "$1" 2>/dev/null; }
@@ -86,7 +92,7 @@ fi
 if [ -n "$ESCAPE" ]; then
   for mode in drop exit; do
     note ""
-    note "== 场景 escape+$mode：会话里再起一个脱离进程组(setsid)的进程，然后 $mode 退出 =="
+    note "== 场景 escape+${mode}：会话里再起一个脱离进程组(setsid)的进程，然后 $mode 退出 =="
     out=$(cargo run -q -p seanbot-core --example bash_session_probe -- "$mode" 2 "$ESCAPE" 2>/dev/null)
     printf '%s\n' "$out"
     pids=$(printf '%s\n' "$out" | pids_of | tr '\n' ' ')

@@ -214,8 +214,16 @@ mod tests {
         let taken = tracker.take_for(&inner.join("src/main.rs"), &root);
         let names: Vec<String> = taken.iter().map(|f| f.path.display().to_string()).collect();
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(names[0].contains("crates/AGENTS.md"), "远的先来：{names:?}");
-        assert!(names[1].contains("app/AGENTS.md"), "{names:?}");
+        // 用路径比较而不是字符串包含：Windows 的分隔符是 `\`
+        let expected = |parts: &[&str]| parts.iter().fold(PathBuf::new(), |p, s| p.join(s));
+        assert!(
+            taken[0].path.ends_with(expected(&["crates", "AGENTS.md"])),
+            "远的先来：{names:?}"
+        );
+        assert!(
+            taken[1].path.ends_with(expected(&["app", "AGENTS.md"])),
+            "{names:?}"
+        );
 
         // 同一个文件只注入一次，哪怕换个文件再读
         assert!(

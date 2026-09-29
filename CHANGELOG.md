@@ -41,10 +41,13 @@ Seanbot 的所有重要变更都会记录在本文件中。
 - 官网补齐分享卡片 `site/assets/og.png`（1200×630，`scripts/make-og.py` 可重新生成）与绝对地址的 og / twitter 元信息、canonical、`robots.txt`、`sitemap.xml`
 - `sean` 启动时后台检查新版本：有新版本就在下一个提示符前打印一行提示（结果缓存 24 小时，不阻塞启动、失败静默），可用 `[ui] check_updates = false` 或环境变量 `SEANBOT_NO_UPDATE_CHECK=1` 关闭
 - 脚本测试新增站点自检 `scripts/tests/site_test.sh`：版本一致、素材齐全、分享元信息为绝对地址、HTML 钩子与 `app.js` 对得上
+- 脚本测试新增可移植性守护 `scripts/tests/script_portability_test.sh`：`$var` 后面紧跟非 ASCII 字符时必须写 `${var}`（macOS 自带的 bash 3.2 在非 UTF-8 locale 下会把它当成变量名的一部分）
 
 ### 修复
 
 - 脚本里 `$var` 紧跟中文标点的写法在 macOS 自带的 bash 3.2（非 UTF-8 locale 时）会被当成变量名的一部分，报 `unbound variable`：统一改成 `${var}`（`scripts/release.sh --dry-run` 在 macOS 上因此会直接报错退出）
+- `scripts/tests/bash_session_test.sh` 的残留进程扫描会把自己（`ps` 管道与脚本进程同样带着标记环境）当成残留：改为排除扫描自身
+- 指令文件「远到近」的用例改用路径比较，Windows 上不再因为 `\` 分隔符断言失败
 - 官网「八个内置工具」等文案与 TUI 状态过期：工具改为按分组描述（内核 / 联网 / 知识库 / 技能 / 配置），补上指令文件、技能与知识库三条能力；TUI 标注为「开发中」（ratatui 全屏界面尚未落地）
 - 官网 `og:image` 之前是相对路径的 SVG，多数平台既不识别相对地址也不渲染 SVG；改为绝对地址的 `assets/og.png`（1200×630），并补 `og:locale` / `og:site_name` / `twitter:card` 与 `canonical`
 - `kb_edit` 命中内置知识库条目时不再报「条目不存在」：现在说明它是官方只读条目，并给出两条替代路径（改仓库 `kb/` 发布后 `kb_update`，或用 `kb_add` 写进外置知识库）
