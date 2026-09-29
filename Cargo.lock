@@ -1507,6 +1507,7 @@ dependencies = [
  "async-trait",
  "futures",
  "reqwest",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

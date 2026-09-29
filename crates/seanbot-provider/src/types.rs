@@ -1,8 +1,10 @@
 //! 与厂商无关的统一类型。
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     User,
     Assistant,
@@ -10,19 +12,23 @@ pub enum Role {
 }
 
 /// 一次完整的工具调用。`arguments` 保持模型给出的原始 JSON 文本，由内核解析。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
     pub role: Role,
+    #[serde(default)]
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
 }
 
@@ -208,5 +214,34 @@ mod tests {
         assert_eq!(t.tool_call_id.as_deref(), Some("call_1"));
         let a = Message::assistant("hi", Some("think".into()), vec![]);
         assert_eq!(a.reasoning.as_deref(), Some("think"));
+    }
+    #[test]
+    fn message_serde_roundtrip() {
+        let m = Message::assistant(
+            "好的\n第二行 \"引号\" 🎉",
+            Some("想一想".into()),
+            vec![ToolCall {
+                id: "c1".into(),
+                name: "read".into(),
+                arguments: r#"{"path":"a"}"#.into(),
+            }],
+        );
+        let json = serde_json::to_string(&m).unwrap();
+        assert_eq!(serde_json::from_str::<Message>(&json).unwrap(), m);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["role"], "assistant");
+        assert!(v.get("tool_call_id").is_none());
+
+        assert_eq!(
+            serde_json::to_value(Message::user("hi")).unwrap(),
+            serde_json::json!({"role": "user", "content": "hi"})
+        );
+        assert_eq!(
+            serde_json::to_value(Message::tool("c1", "ok")).unwrap(),
+            serde_json::json!({"role": "tool", "content": "ok", "tool_call_id": "c1"})
+        );
+        let back: Message =
+            serde_json::from_value(serde_json::json!({"role": "user", "content": "x"})).unwrap();
+        assert_eq!(back, Message::user("x"));
     }
 }
