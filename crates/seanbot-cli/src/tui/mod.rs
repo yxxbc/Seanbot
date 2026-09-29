@@ -10,6 +10,8 @@
 //! 伪终端在当前开发沙箱里不可用（openpty 被拒），所以界面靠 ratatui TestBackend 断言
 //! （活动区/输入行/状态栏/光标），入口与按键逻辑用单元测试覆盖。
 
+mod slash;
+
 use std::{
     io::{self, Write},
     sync::{Arc, Mutex},
@@ -29,17 +31,17 @@ use futures::StreamExt;
 use ratatui::{
     Frame, Terminal, TerminalOptions, Viewport,
     backend::CrosstermBackend,
-    layout::{Constraint, Layout},
-    style::{Color, Style},
+    layout::{Constraint, Layout, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Paragraph, Widget},
+    widgets::{Clear, Paragraph, Widget},
 };
 use seanbot_core::{Agent, AgentEvent, config::Config};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{format, journal::Journal};
+use crate::{format, journal::Journal, repl};
 
 /// 活动区高度（阶段 2c 会改成随内容动态变化）。
 const MIN_VIEWPORT_HEIGHT: u16 = 4;
@@ -92,6 +94,8 @@ pub enum Action {
     Submit(String),
     /// 取消正在跑的一轮
     Cancel,
+    /// 执行一条斜杠命令
+    Command(&'static str),
     /// 退出程序
     Quit,
 }
@@ -188,8 +192,17 @@ impl Input {
 }
 
 /// 界面状态。
+/// 斜杠命令浮窗状态。
+#[derive(Debug, Default)]
+struct Popup {
+    matches: Vec<slash::Match>,
+    selected: usize,
+}
+
 pub struct App {
     input: Input,
+    /// 斜杠命令浮窗（输入以 `/` 开头时出现）
+    popup: Option<Popup>,
     /// 待写进终端滚动区的行（写出去就从内存里丢掉）
     pending: Vec<Line<'static>>,
     /// 本轮助手正文的 Markdown 流式渲染器
@@ -215,6 +228,7 @@ impl App {
         let left = format!("{model} · {}", shorten_home(cwd));
         Self {
             input: Input::default(),
+            popup: None,
             pending: Vec::new(),
             markdown: None,
             tail: Vec::new(),
@@ -238,6 +252,7 @@ impl App {
             Event::Key(key) => self.on_key_press(key),
             Event::Paste(text) => {
                 self.input.insert_str(&text);
+                self.refresh_popup();
                 Action::None
             }
             _ => Action::None,
@@ -248,6 +263,38 @@ impl App {
         // Windows 上会有 Release/Repeat，只认按下
         if key.kind != KeyEventKind::Press {
             return Action::None;
+        }
+        // 浮窗打开时，方向键/Enter/Tab/Esc 先归它
+        if self.popup.is_some() {
+            match key.code {
+                KeyCode::Up => {
+                    self.move_selection(-1);
+                    return Action::None;
+                }
+                KeyCode::Down => {
+                    self.move_selection(1);
+                    return Action::None;
+                }
+                KeyCode::Tab => {
+                    self.complete_selection();
+                    return Action::None;
+                }
+                KeyCode::Esc => {
+                    self.popup = None;
+                    return Action::None;
+                }
+                KeyCode::Enter => {
+                    if let Some(name) = self.selected_command() {
+                        self.popup = None;
+                        self.input.clear();
+                        if name == "/exit" {
+                            return Action::Quit;
+                        }
+                        return Action::Command(name);
+                    }
+                }
+                _ => {}
+            }
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl {
@@ -269,6 +316,7 @@ impl App {
                 }
                 KeyCode::Char('u') => {
                     self.input.clear();
+                    self.refresh_popup();
                     return Action::None;
                 }
                 _ => return Action::None,
@@ -288,14 +336,17 @@ impl App {
             }
             KeyCode::Char(c) => {
                 self.input.insert(c);
+                self.refresh_popup();
                 Action::None
             }
             KeyCode::Backspace => {
                 self.input.backspace();
+                self.refresh_popup();
                 Action::None
             }
             KeyCode::Delete => {
                 self.input.delete();
+                self.refresh_popup();
                 Action::None
             }
             KeyCode::Left => {
@@ -424,8 +475,14 @@ impl App {
     /// 活动区高度：流式尾部 + 输入行 + 状态栏，不超过终端高度一半。
     pub fn desired_height(&self, term_height: u16) -> u16 {
         let body = (self.tail.len() as u16).max(3);
+        // 浮窗也要占地方，不然会把它挤掉
+        let popup = self
+            .popup
+            .as_ref()
+            .map(|popup| popup.matches.len() as u16)
+            .unwrap_or(0);
         let cap = (term_height / 2).max(4);
-        (body + 2).clamp(4, cap).min(term_height.max(4))
+        (body.max(popup) + 2).clamp(4, cap).min(term_height.max(4))
     }
 
     pub fn tick(&mut self) {
@@ -436,6 +493,59 @@ impl App {
     fn activity_lines(&self, height: usize) -> Vec<Line<'static>> {
         let skip = self.tail.len().saturating_sub(height);
         self.tail.iter().skip(skip).cloned().collect()
+    }
+
+    /// 浮窗当前选中的命令名。
+    fn selected_command(&self) -> Option<&'static str> {
+        let popup = self.popup.as_ref()?;
+        let item = popup.matches.get(popup.selected)?;
+        Some(slash::COMMANDS[item.index].name)
+    }
+
+    /// 输入变化后刷新浮窗（以 / 开头且还没有空格时才显示）。
+    fn refresh_popup(&mut self) {
+        let Some(query) = slash::popup_query(self.input.text()) else {
+            self.popup = None;
+            return;
+        };
+        let matches = slash::filter(query);
+        if matches.is_empty() {
+            self.popup = None;
+            return;
+        }
+        let selected = self
+            .popup
+            .as_ref()
+            .map(|popup| popup.selected.min(matches.len() - 1))
+            .unwrap_or(0);
+        self.popup = Some(Popup { matches, selected });
+    }
+
+    /// 上下移动浮窗选中项（循环）。
+    fn move_selection(&mut self, delta: isize) {
+        let Some(popup) = self.popup.as_mut() else {
+            return;
+        };
+        let len = popup.matches.len() as isize;
+        if len == 0 {
+            return;
+        }
+        popup.selected = (popup.selected as isize + delta).rem_euclid(len) as usize;
+    }
+
+    /// Tab 补全：把选中的命令名填进输入框。
+    fn complete_selection(&mut self) {
+        let Some(name) = self.selected_command() else {
+            return;
+        };
+        self.input.clear();
+        self.input.insert_str(name);
+        self.refresh_popup();
+    }
+
+    /// 权限模式变化后更新状态栏。
+    pub fn set_mode(&mut self, mode: seanbot_core::PermissionMode) {
+        self.mode = mode_label(mode);
     }
 
     fn input_line(&self) -> Line<'static> {
@@ -480,6 +590,27 @@ impl App {
         frame.render_widget(Paragraph::new(self.input_line()), rows[1]);
         frame.render_widget(Paragraph::new(self.status_line()), rows[2]);
 
+        // 浮窗贴在输入行上方
+        if let Some(popup) = &self.popup {
+            let height = (popup.matches.len() as u16).min(rows[0].height);
+            if height > 0 {
+                let area = Rect {
+                    x: rows[0].x,
+                    y: rows[0].bottom().saturating_sub(height),
+                    width: rows[0].width,
+                    height,
+                };
+                let lines: Vec<Line<'static>> = popup
+                    .matches
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| popup_line(item, index == popup.selected))
+                    .collect();
+                frame.render_widget(Clear, area);
+                frame.render_widget(Paragraph::new(lines), area);
+            }
+        }
+
         let width = UnicodeWidthStr::width(self.input.text()) as u16;
         let x = rows[1].x + PROMPT_WIDTH + width;
         frame.set_cursor_position((x.min(rows[1].right().saturating_sub(1)), rows[1].y));
@@ -491,6 +622,70 @@ fn mode_label(mode: seanbot_core::PermissionMode) -> String {
     match mode {
         seanbot_core::PermissionMode::Yolo => "⚡ YOLO".to_string(),
         seanbot_core::PermissionMode::Confirm => "确认模式".to_string(),
+    }
+}
+
+/// 浮窗里的一行：命令名（命中的字符高亮）+ 说明。
+fn popup_line(item: &slash::Match, selected: bool) -> Line<'static> {
+    let command = slash::COMMANDS[item.index];
+    let marker = if selected { "▸ " } else { "  " };
+    let mut spans = vec![Span::styled(
+        marker,
+        Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C)),
+    )];
+    for (text, hit) in slash::highlight(command.name, &item.positions) {
+        let style = if hit {
+            Style::default()
+                .fg(Color::Rgb(0xE6, 0xB8, 0x5C))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        spans.push(Span::styled(text, style));
+    }
+    spans.push(Span::raw(format!("  {}", command.description)));
+    Line::from(spans)
+}
+
+/// 执行斜杠命令。阶段 2d 先接上不需要列表界面的几条，/model 与 /resume 的列表在下一步。
+fn run_command(
+    name: &str,
+    agent: &mut Agent,
+    journal: &Arc<Mutex<Journal>>,
+    cwd: &str,
+    app: &mut App,
+) {
+    match name {
+        "/help" => {
+            for line in repl::HELP.lines() {
+                app.push_line(line.to_string());
+            }
+        }
+        "/clear" => {
+            agent.clear();
+            if let Ok(mut journal) = journal.lock() {
+                journal.append_if_started(&seanbot_core::session::Record::clear_now());
+            }
+            app.push_line("已清空对话".to_string());
+        }
+        "/yolo" => {
+            repl::toggle_permission_mode(agent);
+            let mode = agent
+                .runtime()
+                .read()
+                .map(|state| state.permission_mode)
+                .unwrap_or(seanbot_core::PermissionMode::Confirm);
+            app.set_mode(mode);
+            app.push_line(format!("权限模式：{}", mode_label(mode)));
+        }
+        "/new" => {
+            repl::start_new(agent, journal, std::path::Path::new(cwd));
+            app.push_line("已开始新会话".to_string());
+        }
+        "/model" | "/resume" | "/mouse" => {
+            app.push_line(format!("{name}：列表/开关界面还在做（阶段 2d 未完）"));
+        }
+        other => app.push_line(format!("未知命令：{other}")),
     }
 }
 
@@ -573,6 +768,7 @@ pub async fn run(
                     Some(Ok(event)) => match app.on_key(event) {
                         Action::Submit(text) => break Some(text),
                         Action::Quit => break None,
+                        Action::Command(name) => run_command(name, agent, journal, &cwd, &mut app),
                         _ => {}
                     },
                     Some(Err(_)) | None => break None,
@@ -811,6 +1007,73 @@ mod tests {
         );
         let cursor = terminal.get_cursor_position().unwrap();
         assert_eq!(cursor.y, 10, "光标应在输入行（倒数第二行）：{cursor:?}");
+    }
+
+    #[test]
+    fn typing_a_slash_opens_and_filters_the_popup() {
+        let mut app = new_app();
+        for c in "/mo".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        let popup = app.popup.as_ref().expect("应当弹出浮窗");
+        let names: Vec<&str> = popup
+            .matches
+            .iter()
+            .map(|m| slash::COMMANDS[m.index].name)
+            .collect();
+        assert_eq!(names, vec!["/model", "/mouse"]);
+        assert_eq!(popup.selected, 0);
+
+        app.on_key(press(KeyCode::Down));
+        assert_eq!(app.popup.as_ref().unwrap().selected, 1);
+        app.on_key(press(KeyCode::Tab));
+        assert_eq!(app.input.text(), "/mouse", "Tab 应当补全选中的命令");
+        assert!(app.popup.is_some(), "补全后仍是命令名，浮窗留着");
+
+        app.on_key(press(KeyCode::Esc));
+        assert!(app.popup.is_none(), "Esc 关掉浮窗");
+        // 关掉后方向键恢复成光标移动
+        app.on_key(press(KeyCode::Left));
+        assert_eq!(app.input.text(), "/mouse");
+    }
+
+    #[test]
+    fn enter_runs_the_selected_command_and_space_closes_it() {
+        let mut app = new_app();
+        for c in "/he".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        assert_eq!(app.on_key(press(KeyCode::Enter)), Action::Command("/help"));
+        assert!(app.input.is_empty(), "执行后清空输入");
+        assert!(app.popup.is_none());
+
+        let mut app = new_app();
+        for c in "/model ".chars() {
+            app.on_key(press(KeyCode::Char(c)));
+        }
+        assert!(app.popup.is_none(), "有空格就不再当成命令名");
+    }
+
+    #[test]
+    fn popup_is_drawn_above_the_input() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = new_app();
+        app.on_key(press(KeyCode::Char('/')));
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer().clone();
+        let mut text = String::new();
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                text.push_str(buffer.cell((x, y)).map(|cell| cell.symbol()).unwrap_or(" "));
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("/help"), "浮窗要列出命令：{text}");
+        assert!(text.contains("/exit"), "{text}");
+        assert!(text.contains("▸ /help"), "选中项要有标记：{text}");
     }
 
     #[test]

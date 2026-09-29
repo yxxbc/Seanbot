@@ -23,7 +23,7 @@ use crate::{
     setup,
 };
 
-const HELP: &str = "\
+pub(crate) const HELP: &str = "\
 /clear   清空当前对话
 /new     开始新会话（换一个会话文件）
 /resume  从列表中选择并恢复历史会话
@@ -220,7 +220,7 @@ pub async fn run(
 }
 
 /// `/yolo`：切换权限模式。
-fn toggle_permission_mode(agent: &mut Agent) {
+pub(crate) fn toggle_permission_mode(agent: &mut Agent) {
     let mode = {
         let runtime = agent.runtime();
         let mut state = runtime.write().unwrap();
@@ -234,7 +234,7 @@ fn toggle_permission_mode(agent: &mut Agent) {
 }
 
 /// `/new`：换一段会话。系统提示词按当前环境重新生成，不沿用恢复来的旧提示词。
-fn start_new(agent: &mut Agent, journal: &Arc<Mutex<Journal>>, cwd: &Path) {
+pub(crate) fn start_new(agent: &mut Agent, journal: &Arc<Mutex<Journal>>, cwd: &Path) {
     let system = system_prompt(&PromptEnv::detect(cwd));
     agent.restore(system.clone(), Vec::new());
     journal.lock().unwrap().start_new(agent.model(), system);

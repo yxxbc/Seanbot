@@ -597,10 +597,7 @@ fn kill_descendants(pid: Option<u32>) {
         .lines()
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
-            Some((
-                fields.next()?.parse().ok()?,
-                fields.next()?.parse().ok()?,
-            ))
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
         })
         .collect();
 
