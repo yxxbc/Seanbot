@@ -649,8 +649,12 @@ impl App {
 
     /// 活动区高度：流式尾部 + 输入行 + 状态栏，不超过终端高度一半。
     pub fn desired_height(&self, term_height: u16) -> u16 {
-        let welcome = if self.welcome { 8 } else { 0 };
-        let body = (self.tail.len() as u16).max(3).max(welcome);
+        // 没有流式内容时活动区只留 1 行：以前 max(3) 硬撑会在输入框上方留一大片空白
+        let body = if self.welcome {
+            8
+        } else {
+            (self.tail.len() as u16).max(1)
+        };
         // 浮窗也要占地方，不然会把它挤掉
         let popup = self
             .popup
@@ -1879,7 +1883,11 @@ mod tests {
         let mut app = new_app();
         assert_eq!(app.desired_height(40), 10, "欢迎框 8 行 + 输入行 + 状态栏");
         app.turn_started("你好");
-        assert_eq!(app.desired_height(40), 5, "发消息后回到最小高度");
+        assert_eq!(
+            app.desired_height(40),
+            4,
+            "发消息后只留 1 行活动区（不再用 max(3) 硬撑）"
+        );
     }
 
     #[test]
@@ -2196,8 +2204,8 @@ mod tests {
         app.turn_started("你好");
         assert_eq!(
             app.desired_height(40),
-            5,
-            "发完消息：3 行正文 + 输入行 + 状态栏"
+            4,
+            "没有流式正文时只留 1 行活动区 + 输入行 + 状态栏"
         );
         assert_eq!(app.desired_height(8), 4, "小终端下不超过一半高度");
         app.on_agent_event(AgentEvent::TextDelta(

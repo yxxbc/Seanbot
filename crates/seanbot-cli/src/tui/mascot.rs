@@ -8,6 +8,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use unicode_width::UnicodeWidthStr;
 
 /// 环的像素网格（点为透明，其余为环）。
 const GRID: [&str; 12] = [
@@ -247,11 +248,13 @@ pub fn welcome_lines(
         let mut spans = vec![Span::styled("│ ", frame_style)];
         spans.extend(art_line.spans.iter().cloned());
         let used = 14usize;
+        let budget = width.saturating_sub(used);
         let tail = match right.get(index) {
-            Some(text) => format!("  {text}"),
+            // 按**显示宽度**裁：CJK 与 ⚡ 这类宽字符占两列，按字符数算会把边框撑歪
+            Some(text) => clip_width(&format!("  {text}"), budget),
             None => String::new(),
         };
-        let pad = width.saturating_sub(used + tail.chars().count());
+        let pad = budget.saturating_sub(UnicodeWidthStr::width(tail.as_str()));
         spans.push(Span::raw(tail));
         spans.push(Span::raw(" ".repeat(pad)));
         spans.push(Span::styled("│", frame_style));
@@ -264,9 +267,46 @@ pub fn welcome_lines(
     lines
 }
 
+/// 按显示宽度截断（超宽字符算两列），装不下就补省略号。
+fn clip_width(text: &str, budget: usize) -> String {
+    if UnicodeWidthStr::width(text) <= budget {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let w = UnicodeWidthStr::width(ch.to_string().as_str());
+        if used + w + 1 > budget {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    out.push('…');
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 回归：宽字符（CJK、⚡）不能让右边框跑偏——每一行的显示宽度都必须一致。
+    #[test]
+    fn welcome_box_stays_aligned_with_wide_characters() {
+        let mascot = Mascot::new(Mood::Idle);
+        for (mode, cwd) in [
+            ("确认模式", "~/proj"),
+            ("⚡ YOLO", "~/proj"),
+            ("确认模式", "~/一个很长的中文目录名/子目录/再一层"),
+        ] {
+            let lines = welcome_lines(&mascot, "9.9.9", "deepseek-flash", mode, cwd);
+            let width = UnicodeWidthStr::width(lines[0].to_string().as_str());
+            for line in &lines {
+                let got = UnicodeWidthStr::width(line.to_string().as_str());
+                assert_eq!(got, width, "每一行都要一样宽（{mode} / {cwd}）：{line:?}");
+            }
+        }
+    }
 
     fn text_of(lines: &[Line<'static>]) -> Vec<String> {
         lines.iter().map(|line| line.to_string()).collect()
