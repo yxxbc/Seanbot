@@ -787,12 +787,13 @@ fn kill_group(pid: Option<u32>) {
     }
 }
 
-/// 进程级兜底：`std::process::exit()` 会跳过 Drop，但会跑 `atexit` 钩子。
+/// 进程级兜底：`std::process::exit()` 跳过 Drop，但会跑 `atexit` 钩子——在那里按
+/// `Session::shutdown()` 同样的顺序把登记过的会话收掉，程序"自己退出"的路不靠子 shell 自觉。
 ///
-/// 没这层的话，"程序自己退出"就得指望子 shell 读到 stdin EOF 后自觉收尾——实测靠不住
-/// （会话 shell 启动的后台作业被 bash 重定向到 /dev/null，根本不看 stdin），所以退出前
-/// 自己动手，按 `shutdown()` 同样的顺序把登记过的会话收掉。
-/// 万一某个平台在退出时不跑 atexit，也还有 Drop、看门狗、EOF 三层接着。
+/// 只装在 Unix：Windows 上 `std::process::exit()` 是直接调 `ExitProcess`（std 的实现就是如此），
+/// CRT 的 `atexit` 队列不会被执行，钩子没有落点；那边由 Drop、看门狗与 EOF 兜住。
+/// 万一某个平台连 `libc::atexit` 都没有，也还有 Drop、看门狗、EOF 三层接着。
+#[cfg(unix)]
 mod exit_guard {
     use std::sync::{Mutex, Once};
 
@@ -849,6 +850,15 @@ mod exit_guard {
     extern "C" fn cleanup() {
         cleanup_now();
     }
+}
+
+/// 非 Unix：没有可用的退出钩子落点（Windows 的 `process::exit()` 直接调 `ExitProcess`，
+/// 不跑 CRT 的 atexit 队列），登记与注销都是空动作，清理靠 Drop、看门狗与 EOF。
+#[cfg(not(unix))]
+mod exit_guard {
+    pub(super) fn register(_pid: Option<u32>, _token: &str) {}
+
+    pub(super) fn unregister(_token: &str) {}
 }
 
 /// 与一次性 bash 一致：超长输出保留首尾。
@@ -920,7 +930,8 @@ mod tests {
     }
 
     /// `std::process::exit()` 跳过 Drop，靠退出钩子收尾：登记过的会话要能被收掉，
-    /// 收掉之后要划出名单，且钩子在没有会话时执行也必须安全。
+    /// 收掉之后要划出名单，且钩子在没有会话时执行也必须安全（钩子只装在 Unix）。
+    #[cfg(unix)]
     #[test]
     fn exit_guard_tracks_live_sessions() {
         exit_guard::cleanup_now(); // 名单为空时也要能安全执行
