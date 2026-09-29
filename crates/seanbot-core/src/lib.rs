@@ -9,3 +9,7 @@ pub use registry::{RegistryError, ToolRegistry};
 pub use tool::{
     ReadTracker, Risk, Tool, ToolContext, ToolError, ToolOutput, ToolSource, resolve_path,
 };
+
+mod denylist;
+
+pub use denylist::Denylist;
