@@ -14,6 +14,7 @@ Seanbot 的所有重要变更都会记录在本文件中。
 ### 新增
 
 - **行内 TUI（阶段 2a 骨架）**：`sean` 默认进入 ratatui 行内界面——raw mode + bracketed paste + panic 兜底还原终端、行内 viewport、单行输入框（光标移动/删除、Ctrl+A/E/U/C）、状态栏（模型 · 目录 · 确认模式/YOLO）、活动区实时显示助手流式正文与工具行；Ctrl+D 或连按两次 Ctrl+C 退出，Esc / Ctrl+C 中断本轮
+- TUI 二级列表（阶段 2d）：`/model` 拉取模型列表（当前模型标 ●、显示上下文长度与是否支持工具）、`/resume` 列出当前目录的历史会话（首句 + 消息数 + 会话 ID），↑↓ 选择、Enter 生效、Esc 取消；`/mouse` 开关鼠标捕获并写回配置 `[ui] mouse`
 - TUI 斜杠命令浮窗（阶段 2d）：输入 `/` 开头时在输入行上方弹浮窗——前缀匹配优先、其次子序列模糊匹配，命中字符高亮，↑↓ 选择、Tab 补全、Enter 执行、Esc 关闭，最多 8 项；已接上 `/help` `/clear` `/yolo` `/new` `/exit`，`/model` `/resume` `/mouse` 的列表与开关在下一步补齐
 - TUI 滚动区（阶段 2c）：已经写完的内容用 `Terminal::insert_before` 写进终端滚动区——终端原生滚动、选择、复制都能用；活动区只保留还没冻结的流式尾部，高度随内容变化且不超过终端一半；助手正文在 TUI 内走同一套 Markdown 渲染
 - 交互模式的 Markdown 渲染：终端里走 theway-markdown 流式渲染（品牌配色：标题金、行内代码奶油、代码语言珊瑚），重定向到文件时仍是原始 Markdown

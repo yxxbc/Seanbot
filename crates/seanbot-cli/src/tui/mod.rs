@@ -539,7 +539,14 @@ impl App {
             .map(|popup| popup.matches.len() as u16)
             .unwrap_or(0);
         let cap = (term_height / 2).max(4);
-        (body.max(popup) + 2).clamp(4, cap).min(term_height.max(4))
+        let picker = self
+            .picker
+            .as_ref()
+            .map(|picker| picker.items.len() as u16 + 1)
+            .unwrap_or(0);
+        (body.max(popup).max(picker) + 2)
+            .clamp(4, cap)
+            .min(term_height.max(4))
     }
 
     pub fn tick(&mut self) {
@@ -553,7 +560,7 @@ impl App {
     }
 
     /// 打开二级列表（没有候选项时直接在滚动区说明）。
-    pub fn open_picker(&mut self, kind: PickKind, title: &str, items: Vec<PickerItem>) {
+    fn open_picker(&mut self, kind: PickKind, title: &str, items: Vec<PickerItem>) {
         if items.is_empty() {
             self.push_line(format!("{title}：没有可选项"));
             return;
@@ -921,7 +928,7 @@ async fn run_command(
                 .ok()
                 .is_some_and(|path| updated.save_to(&path).is_ok());
             if !saved {
-                app.push_line("鼠鼠标开关未能写回配置".to_string());
+                app.push_line("鼠标开关未能写回配置".to_string());
             } else {
                 let enabled = updated.ui.mouse;
                 let result = if enabled {
@@ -1022,7 +1029,7 @@ pub async fn run(
                         Action::Submit(text) => break Some(text),
                         Action::Quit => break None,
                         Action::Command(name) => {
-                            run_command(name, agent, journal, &cwd, &mut app, &cfg).await
+                            run_command(name, agent, journal, &cwd, &mut app, cfg).await
                         }
                         Action::Choose(kind, value) => {
                             apply_choice(kind, value, agent, journal, &mut app)
@@ -1265,6 +1272,55 @@ mod tests {
         );
         let cursor = terminal.get_cursor_position().unwrap();
         assert_eq!(cursor.y, 10, "光标应在输入行（倒数第二行）：{cursor:?}");
+    }
+
+    #[test]
+    fn picker_moves_and_chooses() {
+        let mut app = new_app();
+        app.open_picker(
+            PickKind::Model,
+            "切换模型",
+            vec![
+                PickerItem {
+                    label: "  a".into(),
+                    detail: "d".into(),
+                    value: "a".into(),
+                },
+                PickerItem {
+                    label: "  b".into(),
+                    detail: "d".into(),
+                    value: "b".into(),
+                },
+            ],
+        );
+        assert!(app.picker.is_some());
+        assert_eq!(app.on_key(press(KeyCode::Down)), Action::None);
+        assert_eq!(
+            app.on_key(press(KeyCode::Enter)),
+            Action::Choose(PickKind::Model, "b".into())
+        );
+        assert!(app.picker.is_none(), "选完就关掉列表");
+    }
+
+    #[test]
+    fn picker_closes_on_escape_and_reports_empty_lists() {
+        let mut app = new_app();
+        app.open_picker(PickKind::Session, "恢复会话", Vec::new());
+        assert!(app.picker.is_none(), "没有可选项时不打开列表");
+        let lines: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        assert!(lines.iter().any(|l| l.contains("没有可选项")), "{lines:?}");
+
+        app.open_picker(
+            PickKind::Session,
+            "恢复会话",
+            vec![PickerItem {
+                label: "会话".into(),
+                detail: "1 条消息".into(),
+                value: "/tmp/x.jsonl".into(),
+            }],
+        );
+        assert_eq!(app.on_key(press(KeyCode::Esc)), Action::None);
+        assert!(app.picker.is_none(), "Esc 关掉列表");
     }
 
     #[test]
