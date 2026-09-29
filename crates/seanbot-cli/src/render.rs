@@ -17,7 +17,7 @@ use tokio::{sync::mpsc, time::MissedTickBehavior};
 
 use crate::format;
 
-const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+pub(crate) const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const PREVIEW_LINES: usize = 3;
 const PREVIEW_WIDTH: usize = 120;
 const TICK: Duration = Duration::from_millis(80);

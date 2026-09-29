@@ -48,7 +48,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use unicode_width::UnicodeWidthStr;
 
-use crate::{format, journal::Journal, repl};
+use crate::{format, journal::Journal, render, repl};
 
 /// 活动区高度（阶段 2c 会改成随内容动态变化）。
 const MIN_VIEWPORT_HEIGHT: u16 = 4;
@@ -282,6 +282,8 @@ pub struct App {
     picker: Option<Picker>,
     /// 工具确认框
     confirm: Option<ConfirmState>,
+    /// 正在跑的工具（与 TUI 之前的行内渲染一致：标签 + 起始时刻，状态行里转圈）
+    running_tool: Option<(String, Instant)>,
     /// 本会话的转录（Ctrl+O）
     transcript: Vec<Entry>,
     /// 工具调用的显示信息，按 call_id 暂存
@@ -322,6 +324,7 @@ impl App {
             popup: None,
             picker: None,
             confirm: None,
+            running_tool: None,
             transcript: Vec::new(),
             tool_meta: HashMap::new(),
             transcript_view: transcript::View::default(),
@@ -547,7 +550,8 @@ impl App {
             } => {
                 self.flush_markdown();
                 let label = format::tool_label(&name, &title);
-                self.push_line(format!("⏳ {label}"));
+                // TUI 之前就是这么显示的：运行中的工具在状态行转圈，不往滚动区塞一行
+                self.running_tool = Some((label, Instant::now()));
                 self.tool_meta.insert(
                     call_id,
                     ToolMeta {
@@ -565,8 +569,14 @@ impl App {
                 elapsed,
                 ..
             } => {
+                let label = self
+                    .tool_meta
+                    .get(&call_id)
+                    .map(|meta| format::tool_label(&meta.name, &meta.title))
+                    .unwrap_or_else(|| summary.clone());
                 let mark = if ok { "✓" } else { "✗" };
-                self.push_line(format!("{mark} {summary} · {}", format::secs(elapsed)));
+                self.running_tool = None;
+                self.push_line(format!("{mark} {label} · {}", format::secs(elapsed)));
                 if let Some(meta) = self.tool_meta.get_mut(&call_id) {
                     meta.ok = ok;
                     meta.summary = summary;
@@ -969,22 +979,32 @@ impl App {
     }
 
     fn status_line(&self) -> Line<'static> {
-        let left = if self.running {
-            " 思考中… ".to_string()
-        } else {
-            String::new()
+        // 与 TUI 之前完全一致：跑工具时是「⠋ 标签 用时」，空闲/思考时才是环环的迷你转圈
+        let left = match &self.running_tool {
+            Some((label, since)) => format!(
+                "{} {label} {}",
+                render::FRAMES[self.frame % render::FRAMES.len()],
+                format::secs(since.elapsed())
+            ),
+            None if self.running => "思考中…".to_string(),
+            None => String::new(),
         };
         let hint = self.hint.clone().unwrap_or_default();
-        Line::from(vec![
-            self.mascot.mini(),
-            Span::styled(left, Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C))),
-            Span::raw(format!("{} · {hint}", self.left)),
-            Span::raw("  "),
-            Span::styled(
-                self.mode.clone(),
-                Style::default().fg(Color::Rgb(0xD9, 0x5F, 0x4B)),
-            ),
-        ])
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if self.running_tool.is_none() {
+            spans.push(self.mascot.mini());
+        }
+        spans.push(Span::styled(
+            left,
+            Style::default().fg(Color::Rgb(0xE6, 0xB8, 0x5C)),
+        ));
+        spans.push(Span::raw(format!("{} · {hint}", self.left)));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            self.mode.clone(),
+            Style::default().fg(Color::Rgb(0xD9, 0x5F, 0x4B)),
+        ));
+        Line::from(spans)
     }
 
     fn draw(&self, frame: &mut Frame) {
@@ -1863,6 +1883,41 @@ mod tests {
     }
 
     #[test]
+    fn running_tool_uses_the_pre_tui_spinner() {
+        let mut app = new_app();
+        app.on_agent_event(AgentEvent::ToolStarted {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            // 事件里的 title 是原始参数，标签由 format::tool_label 统一拼
+            title: "cargo test".into(),
+        });
+        // 状态行显示「⠋ 标签 用时」，和 TUI 之前那套一致
+        let status = app.status_line().to_string();
+        assert!(status.contains("Bash(cargo test)"), "{status}");
+        assert!(
+            crate::render::FRAMES
+                .iter()
+                .any(|frame| status.contains(frame)),
+            "应当用行内渲染那套盲文转圈：{status}"
+        );
+        // 运行中的工具不占滚动区，也不该出现 emoji
+        let pushed: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        assert!(pushed.is_empty(), "运行中的工具不进滚动区：{pushed:?}");
+
+        app.on_agent_event(AgentEvent::ToolFinished {
+            call_id: "c1".into(),
+            ok: true,
+            summary: "退出码 0".into(),
+            preview: Vec::new(),
+            elapsed: Duration::from_millis(1200),
+        });
+        let done: Vec<String> = app.take_pending().iter().map(|l| l.to_string()).collect();
+        assert_eq!(done.len(), 1, "{done:?}");
+        assert!(done[0].starts_with("✓ Bash(cargo test) · "), "{done:?}");
+        assert!(!done[0].contains('⏳'), "{done:?}");
+    }
+
+    #[test]
     fn ctrl_o_opens_the_transcript_view() {
         let mut app = new_app();
         assert_eq!(app.on_key(ctrl('o')), Action::OpenTranscript);
@@ -1877,7 +1932,8 @@ mod tests {
         app.on_agent_event(AgentEvent::ToolStarted {
             call_id: "c1".into(),
             name: "bash".into(),
-            title: "Bash(cargo test)".into(),
+            // 事件里的 title 是原始参数，标签由 format::tool_label 统一拼
+            title: "cargo test".into(),
         });
         app.on_agent_event(AgentEvent::ToolFinished {
             call_id: "c1".into(),
