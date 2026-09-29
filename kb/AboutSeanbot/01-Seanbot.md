@@ -30,7 +30,7 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 | 数据目录 | `~/.seanbot/`（`config.toml` 权限 0600、`history` 输入历史、`sessions/` 会话记录、`kb/` 内置知识库、`kb-custom/` 外置知识库） |
 | 环境变量 | `DEEPSEEK_API_KEY` 优先于配置文件中的 key |
 
-**当前状态**：内核（工具、会话记录、知识库、常驻 bash 会话、联网、自更新）与行内 TUI（Markdown 渲染、斜杠命令、确认框、转录视图、吉祥物）都已可用；工具上限可在 `config.toml` 里调整（用 config 工具改）。设计文档见 `docs/superpowers/specs/2026-09-29-seanbot-mvp-design.md` 与 `2026-09-29-seanbot-tui-design.md`（TUI 相关部分以后者为准）。
+**当前状态**：内核（工具、会话记录、知识库、常驻 bash 会话、联网、自更新）与行内 TUI（Markdown 渲染、斜杠命令、确认框、转录视图、吉祥物）都已可用；工具上限可在 `config.toml` 里调整（用 config 工具改）。本知识库只讲使用层面——设计文档在开发者的本地 `docs/` 目录里，不入库、也不随安装分发。
 
 ## why author create Seanbot?
 
@@ -42,7 +42,7 @@ Seanbot（命令名 `sean`）是一个在终端里运行的 AI 代理，用 Rust
 4. 成本意识：利用 DeepSeek 服务端前缀缓存——系统提示词会话内固定、历史只追加、工具定义顺序固定，每轮结束显示缓存命中量，省 token。
 5. 安全可控，但不假装是沙箱：bash 黑名单（可配置）、权限回调、随时可中断；黑名单被明确定位为"护栏而非沙箱"。
 6. 长期生态野心：内核 + 工具注册打底，规划知识库、人格、子代理、插件系统（官方内置 / agent 自建 / GitHub 第三方三类），未来用同一内核支撑 Tauri 2 桌面端。
-7. 保护知识资产：内置知识库与用户外置知识库必须能被区分、防止误删误改（见 `docs/Seanbot/知识库说明.md`）。
+7. 保护知识资产：内置知识库与用户外置知识库必须能被区分、防止误删误改（见知识库条目 `SeanbotTools/02-KnowledgeBase.md`）。
 
 ## Seanbot can help you
 

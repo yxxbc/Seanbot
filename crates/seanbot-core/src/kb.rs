@@ -581,6 +581,21 @@ mod tests {
     }
 
     /// kb/index.json 必须与 kb/ 下实际文件一致，否则远程更新会漏文件。
+    /// 知识库条目会随二进制分发、也会被 `kb_update` 从远程拉取，
+    /// 因此不能引用没有入库的路径（例如本地 `docs/`：git 忽略、别人 checkout 不到、
+    /// 用户装完 sean 也看不到），否则条目里留的就是一条死链。
+    #[test]
+    fn embedded_entries_do_not_reference_local_only_paths() {
+        for (name, body) in EMBEDDED_FILES {
+            for needle in ["docs/Seanbot/", "docs/superpowers/"] {
+                assert!(
+                    !body.contains(needle),
+                    "{name} 引用了不入库的 {needle}；知识库只应引用已提交的路径（kb/ 条目、scripts/、prompt/ 等）"
+                );
+            }
+        }
+    }
+
     #[test]
     fn embedded_index_matches_embedded_files() {
         let index: KbIndex = serde_json::from_str(EMBEDDED_INDEX).unwrap();
