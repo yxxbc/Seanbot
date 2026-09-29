@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+#
+# commit-msg —— 提交信息规范硬性检查（Conventional Commits）
+#
+# 要求格式：<type>(<scope>): <描述>
+#   - type 必须是允许列表之一，可带 ! 表示破坏性变更
+#   - scope 可选，仅限小写字母、数字、点、下划线、连字符
+#   - 描述不能为空，不能以 . 或 。 结尾
+#   - 纯 ASCII 首行不超过 72 字符
+#
+# 放行：Merge / Revert / fixup! / squash! 自动生成的提交信息
+# 安装：bash scripts/install-hooks.sh
+set -u
+
+msg_file="$1"
+
+first_line="$(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$msg_file" | head -n 1)"
+
+case "$first_line" in
+  "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+
+pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._-]+\))?!?: .+'
+
+if ! printf '%s' "$first_line" | grep -Eq "$pattern"; then
+  hint=""
+  case "$first_line" in
+    *：*) hint="  ⚠ 检测到全角冒号『：』，请改用半角冒号加空格：type(scope): 描述" ;;
+  esac
+  cat >&2 <<EOF
+
+✗ 提交被拒绝：提交信息不符合 Conventional Commits 规范
+
+  要求格式： <type>(<scope>): <描述>
+  允许类型： feat fix docs style refactor perf test build ci chore revert
+  示例：
+    feat(cli): 添加交互式对话
+    fix(core): 修复取消后历史不一致的问题
+    docs(kb): 补充内核工具参数说明
+
+  你的提交信息：
+    $first_line
+
+$hint
+  详见 CLAUDE.md 的 Commit conventions 一节。
+EOF
+  exit 1
+fi
+
+# 描述末尾不允许句号
+case "$first_line" in
+  *.|*。)
+    echo "" >&2
+    echo "✗ 提交被拒绝：描述末尾不要加句号（. 或 。）" >&2
+    echo "  你的提交信息： $first_line" >&2
+    exit 1
+    ;;
+esac
+
+# 纯 ASCII 首行长度限制（含中文的行不设硬性上限）
+if printf '%s' "$first_line" | LC_ALL=C grep -Eq '^[ -~]*$'; then
+  len="$(printf '%s' "$first_line" | wc -c | tr -d '[:space:]')"
+  if [ "$len" -gt 72 ]; then
+    echo "✗ 提交被拒绝：首行 $len 字符，超过 72 字符上限" >&2
+    echo "  建议：把细节移到提交正文（空一行后书写）" >&2
+    exit 1
+  fi
+fi
+
+exit 0
